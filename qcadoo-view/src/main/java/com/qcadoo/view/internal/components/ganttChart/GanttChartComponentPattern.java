@@ -43,6 +43,9 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
 
     private static final String JSP_PATH = "elements/ganttChart.jsp";
 
+    /** Grid step, in minutes, that moved Gantt item start dates snap to. */
+    public static final int MOVE_GRID_MINUTES = 30;
+
     private String resolver;
 
     private GanttChartItemStrip.Orientation stripOrientation;
@@ -52,6 +55,9 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
     private int defaultEndDay = 21;
 
     private boolean allowDateSelection = true;
+
+    /** Value of the {@code allowItemMove} view option: whether items may be moved with the {@code moveItem} event. */
+    private boolean allowItemMove = false;
 
     private boolean hasPopupInfo = true;
 
@@ -100,6 +106,8 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
                 itemsBorderWidth = Integer.valueOf(option.getValue());
             } else if ("itemsBorderColor".equals(option.getType())) {
                 itemsBorderColor = option.getValue();
+            } else if ("allowItemMove".equals(option.getType())) {
+                allowItemMove = Boolean.valueOf(option.getValue());
             }
         }
         if (resolver == null) {
@@ -124,12 +132,22 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
         addTranslation(translations, "colisionElementName", locale);
         addTranslation(translations, "colisionBox.header", locale);
         addTranslation(translations, "colisionBox.closeButton", locale);
+        addTranslation(translations, "move.rejectedHeader", locale);
 
         JSONObject json = super.getJsOptions(locale);
         json.put("translations", translations);
 
         json.put("hasPopupInfo", hasPopupInfo);
         json.put("allowDateSelection", allowDateSelection);
+        json.put("allowItemMove", allowItemMove);
+        json.put("moveGridMinutes", MOVE_GRID_MINUTES);
+
+        // Maps each ZoomLevel name to the number of hours one chart cell spans at that zoom level.
+        JSONObject zoomHoursIntervals = new JSONObject();
+        for (ZoomLevel zoomLevel : ZoomLevel.values()) {
+            zoomHoursIntervals.put(zoomLevel.toString(), zoomLevel.getHoursInterval());
+        }
+        json.put("zoomHoursIntervals", zoomHoursIntervals);
 
         return json;
     }
@@ -168,6 +186,11 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
 
     public final Orientation getStripOrientation() {
         return stripOrientation;
+    }
+
+    /** Returns whether Gantt items of this component may be moved with the moveItem event. */
+    public final boolean isAllowItemMove() {
+        return allowItemMove;
     }
 
     public int getItemsBorderWidth() {
