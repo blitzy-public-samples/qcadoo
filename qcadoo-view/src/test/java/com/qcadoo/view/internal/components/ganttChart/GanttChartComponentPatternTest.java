@@ -296,8 +296,8 @@ public class GanttChartComponentPatternTest {
     @Test
     public final void shouldRejectAllowItemMoveOptionWithoutValueAttribute() throws Exception {
         // given
-        // The view XML parser stores every attribute of <option type="allowItemMove" />, including "type", so the option's
-        // only attribute is its type, and getValue() returns that attribute's value.
+        // An <option type="allowItemMove" /> element: its only attribute is type="allowItemMove", and getValue() returns
+        // "allowItemMove".
         ComponentOption option = new ComponentOption("allowItemMove", Collections.singletonMap("type", "allowItemMove"));
 
         // when

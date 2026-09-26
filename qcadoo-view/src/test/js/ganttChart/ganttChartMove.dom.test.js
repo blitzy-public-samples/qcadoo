@@ -41,6 +41,22 @@
  * run fails on a missing chrome-headless-shell, a failed case and a manifest case that did not run, such as one excluded
  * by a name, skip or only filter. SIGINT, SIGTERM and SIGHUP stop chrome-headless-shell, remove its profile and exit
  * with 128 + the signal number.
+ *
+ * Worker isolation: the run is this process, its ancestors and the processes an earlier check without an intrusion
+ * admitted, each by itself, and this process and the members of its process group, each with its descendants; pid 1
+ * and kernel threads are admitted with it. The runner tells two kinds of findings apart. Co-tenancy: a process of /proc
+ * that is not admitted, a socket of /proc/net/tcp, tcp6, udp and udp6 that no admitted process holds, a process that
+ * cannot be inspected, a /proc table that cannot be read and, unless the runner runs as root, /proc mounted with
+ * hidepid. Intrusion: a process of the run that is traced, and, while chrome-headless-shell runs, a connection with an
+ * end at its DevTools listening address other than the runner's own, or a new entry without a socket there, such as
+ * TIME_WAIT. A finding other than a DevTools one counts once an immediate second collection finds it again. The runner
+ * checks before any case is registered and again before it starts chrome-headless-shell: co-tenancy is written to
+ * stderr as one warning line per check, naming the number of findings and at most ISOLATION_OFFENDER_LIMIT of them, and
+ * the run continues; an intrusion fails the run. From the first check until the after hook it looks for intrusions
+ * only, every 500 ms; an intrusion found then stops chrome-headless-shell and fails every later case and the after
+ * hook. Co-tenancy never stops the run or fails a case. In a private worker that holds only this run, such as
+ * unshare --pid --fork --mount-proc --net with the loopback interface up, no co-tenancy arises and no warning is
+ * written.
  */
 'use strict';
 
@@ -144,7 +160,8 @@ const EXPECTED_CASE_NAMES = Object.freeze([
         + 're-render hides the rejection',
     'a click on another bar between a drag and its late click keeps the late click ignored',
     'a non-integral or out-of-range pointer id is ignored while the native pointer is active',
-    'a malformed HTTP 200 moveItem reply snaps back through the transport error path',
+    'a press whose bar cannot capture the pointer starts no drag and sends nothing',
+    'a malformed HTTP 200 moveItem reply that the transport drops snaps the bar back and unblocks the chart',
     'a committed move whose chart cannot be refreshed answers with the error page: the bar returns, the error is shown '
         + 'and no second refresh is sent',
     'an accepted moveResult without a chart restores the bar and leaves the chart and its header unchanged'
@@ -171,7 +188,8 @@ const GANTT_ID = 'window.mainTab.gridLayout.gantt';
 const ROW_HEIGHT_PX = 30;
 const GRID_STEP_H1_PX = 12.5;
 
-// Page expression that is true when the Gantt component is not blocked and no blockUI element remains inside it.
+// Page expression that is true when the element with id GANTT_ID exists, its jQuery data "blockUI.isBlocked" is falsy,
+// and no .blockUI element exists anywhere under the fixture host #ganttHost.
 const IS_UNBLOCKED_EXPR = '(function () {'
     + ' var element = document.getElementById(' + JSON.stringify(GANTT_ID) + ');'
     + ' return !!element && !jQuery(element).data("blockUI.isBlocked")'
@@ -201,16 +219,490 @@ function settlesWithin(promise, timeoutMs) {
     return Promise.race([promise.then(() => true, () => true), timeout]).finally(() => clearTimeout(timer));
 }
 
+// Largest number of findings an isolation error or co-tenancy warning names.
+const ISOLATION_OFFENDER_LIMIT = 10;
+
+// Isolation policy of the runner, as its isolation errors and co-tenancy warnings state it.
+const ISOLATION_REQUIREMENT = 'ganttChartMove.dom.test.js stops the run when a process of this run is traced or when '
+    + 'a connection other than its own reaches the DevTools port of ' + CHROME_BINARY + ', and only warns about '
+    + 'processes and sockets outside this run; in a private worker that holds only this run, such as unshare --pid '
+    + '--fork --mount-proc --net with the loopback interface up, there are none and no warning is written';
+
+// Interval of the isolation watch, which runs from the first isolation check until the after hook, in milliseconds.
+const ISOLATION_WATCH_INTERVAL_MS = 500;
+
+// PF_KTHREAD, the flag of a kernel thread in the flags field of /proc/<pid>/stat.
+const PF_KTHREAD = 0x00200000;
+
+// Names of the TCP states of /proc/net/tcp and tcp6, by their hexadecimal code.
+const TCP_STATE_NAMES = {
+    '01': 'ESTABLISHED', '02': 'SYN_SENT', '03': 'SYN_RECV', '04': 'FIN_WAIT1', '05': 'FIN_WAIT2', '06': 'TIME_WAIT',
+    '07': 'CLOSE', '08': 'CLOSE_WAIT', '09': 'LAST_ACK', '0A': 'LISTEN', '0B': 'CLOSING', '0C': 'NEW_SYN_RECV'
+};
+
+// State of the isolation watch: error is the intrusion it found, as an Error, and stopping the promise of the browser
+// stop that intrusion began, which resolves with the stop error or null, both null until an intrusion; timer is its
+// interval timer while it runs; devTools the DevTools port check of watchDevToolsPort while chrome-headless-shell
+// runs; admitted the '<pid>:<start>' keys of the processes the isolation checks without an intrusion have admitted.
+const isolation = { error: null, stopping: null, timer: null, devTools: null, admitted: new Set() };
+
+// Reads /proc/<pid>/status of the process pid and returns { euid, tracer }: euid is the effective uid of its Uid: line
+// and tracer its TracerPid: value, both decimal strings. Returns null for a process that has exited, and pushes
+// 'process <pid> cannot be inspected' to violations and returns null when the file fails to read with an error other
+// than ENOENT and ESRCH or lacks one of those fields.
+function readProcessStatus(pid, violations) {
+    let status;
+    try {
+        status = fs.readFileSync('/proc/' + pid + '/status', 'latin1');
+    } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'ESRCH') {
+            violations.push('process ' + pid + ' cannot be inspected');
+        }
+        return null;
+    }
+    const lines = status.split('\n').map((line) => line.split(/[ \t]+/).filter((field) => field !== ''));
+    const uids = lines.find((line) => line[0] === 'Uid:');
+    const tracer = lines.find((line) => line[0] === 'TracerPid:');
+    if (!uids || uids.length !== 5 || !uids.slice(1).every((uid) => /^\d+$/.test(uid))
+        || !tracer || tracer.length !== 2 || !/^\d+$/.test(tracer[1])) {
+        violations.push('process ' + pid + ' cannot be inspected');
+        return null;
+    }
+    return { euid: uids[2], tracer: tracer[1] };
+}
+
+// Reads /proc/<pid>/stat of every process of /proc, and with withStatus also its /proc/<pid>/status through
+// readProcessStatus, and returns a Map from each pid, a string, to { ppid, pgid, start, kernel, euid, tracer }: ppid,
+// pgid and start are the parent pid, the process group id and the start time (fields 4, 5 and 22 of stat), kernel
+// whether the flags field of stat holds PF_KTHREAD, and euid and tracer the values of readProcessStatus, or null
+// without withStatus; all but kernel are decimal strings or null. Pushes '/proc cannot be listed' to violations when
+// /proc cannot be read, and 'process <pid> cannot be inspected' for a process whose files fail to read with an error
+// other than ENOENT and ESRCH or lack one of those fields. A process that has exited is skipped.
+function readProcesses(violations, withStatus) {
+    const processes = new Map();
+    let names;
+    try {
+        names = fs.readdirSync('/proc');
+    } catch (error) {
+        violations.push('/proc cannot be listed');
+        return processes;
+    }
+    for (const pid of names.filter((name) => /^\d+$/.test(name))) {
+        let stat;
+        try {
+            stat = fs.readFileSync('/proc/' + pid + '/stat', 'latin1');
+        } catch (error) {
+            if (error.code !== 'ENOENT' && error.code !== 'ESRCH') {
+                violations.push('process ' + pid + ' cannot be inspected');
+            }
+            continue;
+        }
+        // The fields after the parenthesised command name, from the state (field 3 of stat) on.
+        const nameEnd = stat.lastIndexOf(')');
+        const fields = stat.slice(nameEnd + 2).split(' ');
+        if (nameEnd < 0 || fields.length < 20 || ![1, 2, 6, 19].every((index) => /^\d+$/.test(fields[index]))) {
+            violations.push('process ' + pid + ' cannot be inspected');
+            continue;
+        }
+        const status = withStatus ? readProcessStatus(pid, violations) : { euid: null, tracer: null };
+        if (!status) {
+            continue;
+        }
+        processes.set(pid, {
+            ppid: fields[1],
+            pgid: fields[2],
+            start: fields[19],
+            kernel: (Number(fields[6]) & PF_KTHREAD) !== 0,
+            euid: status.euid,
+            tracer: status.tracer
+        });
+    }
+    return processes;
+}
+
+// Returns the pids from pid up through its parent, its parent's parent and so on, as far as processes holds them.
+function ancestorChain(pid, processes) {
+    const chain = [];
+    let current = pid;
+    while (processes.has(current) && !chain.includes(current)) {
+        chain.push(current);
+        current = processes.get(current).ppid;
+    }
+    return chain;
+}
+
+// Returns the Set of the pids of roots that processes holds and of all their descendants.
+function descendantsOf(roots, processes) {
+    const children = new Map();
+    for (const [pid, info] of processes) {
+        if (!children.has(info.ppid)) {
+            children.set(info.ppid, []);
+        }
+        children.get(info.ppid).push(pid);
+    }
+    const members = new Set();
+    const pending = roots.filter((pid) => processes.has(pid));
+    while (pending.length > 0) {
+        const pid = pending.pop();
+        if (!members.has(pid)) {
+            members.add(pid);
+            pending.push(...(children.get(pid) || []));
+        }
+    }
+    return members;
+}
+
+// Returns the inodes of the sockets the process pid holds, read from its /proc/<pid>/fd links; empty when unreadable.
+function socketInodes(pid) {
+    const inodes = new Set();
+    let entries;
+    try {
+        entries = fs.readdirSync('/proc/' + pid + '/fd');
+    } catch (error) {
+        return inodes;
+    }
+    for (const entry of entries) {
+        let link;
+        try {
+            link = fs.readlinkSync('/proc/' + pid + '/fd/' + entry);
+        } catch (error) {
+            // A descriptor closed while the links are read is skipped.
+            continue;
+        }
+        const match = /^socket:\[(\d+)\]$/.exec(link);
+        if (match) {
+            inodes.add(match[1]);
+        }
+    }
+    return inodes;
+}
+
+// Returns the entries of the tables /proc/net/<protocol> of protocols as { protocol, state, local, remote, localPort,
+// remotePort, uid, inode }: state is the hexadecimal state code in upper case, local and remote the address:port fields
+// in upper case as the table writes them, localPort and remotePort their decimal ports, uid and inode decimal strings.
+// A missing table is skipped. Throws when a table cannot be read or holds a line that is not an entry.
+function socketTable(protocols) {
+    const entries = [];
+    for (const protocol of protocols) {
+        const table = '/proc/net/' + protocol;
+        let text;
+        try {
+            text = fs.readFileSync(table, 'latin1');
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                continue;
+            }
+            throw new Error(table + ' cannot be read (' + error.code + ')');
+        }
+        for (const line of text.split('\n').slice(1)) {
+            const fields = line.split(/[ \t]+/).filter((field) => field !== '');
+            if (fields.length === 0) {
+                continue;
+            }
+            const local = /^[0-9A-F]+:([0-9A-F]{4})$/i.exec(fields[1] || '');
+            const remote = /^[0-9A-F]+:([0-9A-F]{4})$/i.exec(fields[2] || '');
+            if (!local || !remote || !/^[0-9A-F]{2}$/i.test(fields[3] || '') || !/^\d+$/.test(fields[7] || '')
+                || !/^\d+$/.test(fields[9] || '')) {
+                throw new Error(table + ' holds a line that is not a socket entry');
+            }
+            entries.push({
+                protocol,
+                state: fields[3].toUpperCase(),
+                local: fields[1].toUpperCase(),
+                remote: fields[2].toUpperCase(),
+                localPort: parseInt(local[1], 16),
+                remotePort: parseInt(remote[1], 16),
+                uid: fields[7],
+                inode: fields[9]
+            });
+        }
+    }
+    return entries;
+}
+
+// Collects the isolation findings once. remembered holds the '<pid>:<start>' keys of the processes an earlier
+// collection without an intrusion admitted. The run is this process with its ancestors, the remembered processes that
+// still run, each by itself, and this process and the members of its process group when that id is not 0, each with
+// all its descendants. A process is admitted when it belongs to the run or is pid 1 or a kernel thread. Returns
+// { coTenancy, intrusion, admitted }: admitted holds the keys of the admitted processes; intrusion holds
+// 'process <pid> is traced by process <tracer>' for every process of the run whose TracerPid is not 0; coTenancy is
+// empty unless full is true and then holds, in this order:
+//   - '/proc/self/mountinfo cannot be read, ...' when that file cannot be read or is empty;
+//   - unless the runner runs as root, '/proc is mounted with hidepid=<value>, ...' for every hidepid option other than
+//     hidepid=0 and hidepid=off in the mount options (field 6) or the super options (the last field) of a
+//     /proc/self/mountinfo line whose mount point (field 5) is /proc;
+//   - the entries of readProcesses and readProcessStatus;
+//   - the message of socketTable when a table of /proc/net/tcp, tcp6, udp and udp6 cannot be read or parsed;
+//   - 'process <pid> (uid <uid>) is not part of this run' for every process that is not admitted, naming its effective
+//     uid;
+//   - 'a <protocol> socket on local port <port> (uid <uid>) belongs to no process of this run' for every socket of those
+//     tables whose inode is not 0 and that no admitted process holds.
+// Without full, it reads /proc/<pid>/stat of every process and /proc/<pid>/status of the processes of the run only, and
+// reads neither /proc/self/mountinfo, the socket tables nor any process's descriptors.
+// Entries name pids, uids, ports and /proc paths only, never a command line, an environment or an argument value.
+function isolationViolationsOnce(remembered, full) {
+    const coTenancy = [];
+    const intrusion = [];
+    if (full) {
+        const effectiveUid = String(process.geteuid());
+        let mountinfo = '';
+        try {
+            mountinfo = fs.readFileSync('/proc/self/mountinfo', 'utf8');
+        } catch (error) {
+            mountinfo = '';
+        }
+        if (mountinfo === '') {
+            coTenancy.push('/proc/self/mountinfo cannot be read, so the process list cannot be checked');
+        } else if (effectiveUid !== '0') {
+            for (const line of mountinfo.split('\n')) {
+                const fields = line.split(' ');
+                if (fields[4] !== '/proc') {
+                    continue;
+                }
+                for (const option of (fields[5] + ',' + fields[fields.length - 1]).split(',')) {
+                    const value = option.startsWith('hidepid=') ? option.slice('hidepid='.length) : null;
+                    if (value !== null && value !== '0' && value !== 'off') {
+                        coTenancy.push('/proc is mounted with hidepid=' + value
+                            + ", so other accounts' processes cannot be listed");
+                    }
+                }
+            }
+        }
+    }
+
+    const processes = readProcesses(full ? coTenancy : [], full);
+    const self = String(process.pid);
+    const chain = ancestorChain(self, processes);
+    const group = processes.has(self) ? processes.get(self).pgid : '0';
+    const key = (pid) => pid + ':' + processes.get(pid).start;
+    const roots = [self];
+    for (const [pid, info] of processes) {
+        if (group !== '0' && info.pgid === group) {
+            roots.push(pid);
+        }
+    }
+    const run = descendantsOf(roots, processes);
+    for (const pid of processes.keys()) {
+        if (chain.includes(pid) || remembered.has(key(pid))) {
+            run.add(pid);
+        }
+    }
+
+    let table = [];
+    if (full) {
+        try {
+            table = socketTable(['tcp', 'tcp6', 'udp', 'udp6']);
+        } catch (error) {
+            coTenancy.push(error.message);
+        }
+    }
+
+    const isAdmitted = (pid) => run.has(pid) || pid === '1' || processes.get(pid).kernel;
+    const holders = new Map();
+    const admitted = new Set();
+    for (const [pid, info] of processes) {
+        if (full) {
+            for (const inode of socketInodes(pid)) {
+                if (!holders.has(inode)) {
+                    holders.set(inode, []);
+                }
+                holders.get(inode).push(pid);
+            }
+        }
+        if (isAdmitted(pid)) {
+            admitted.add(key(pid));
+        } else if (full) {
+            coTenancy.push('process ' + pid + ' (uid ' + info.euid + ') is not part of this run');
+        }
+    }
+    for (const pid of run) {
+        const status = full ? processes.get(pid) : readProcessStatus(pid, []);
+        if (status && status.tracer !== '0') {
+            intrusion.push('process ' + pid + ' is traced by process ' + status.tracer);
+        }
+    }
+    for (const entry of table) {
+        if (entry.inode !== '0' && !(holders.get(entry.inode) || []).some(isAdmitted)) {
+            coTenancy.push('a ' + entry.protocol + ' socket on local port ' + entry.localPort + ' (uid ' + entry.uid
+                + ') belongs to no process of this run');
+        }
+    }
+    return { coTenancy, intrusion, admitted };
+}
+
+// Returns the isolation findings { coTenancy, intrusion } of isolationViolationsOnce(isolation.admitted, full): each
+// list is empty when a first collection finds nothing, and otherwise holds the findings of that collection that a
+// second one, made at once, finds again. When no intrusion remains, adds the keys of the processes the first
+// collection admitted to isolation.admitted.
+function workerIsolation(full) {
+    const first = isolationViolationsOnce(isolation.admitted, full);
+    let coTenancy = [...new Set(first.coTenancy)];
+    let intrusion = [...new Set(first.intrusion)];
+    if (coTenancy.length > 0 || intrusion.length > 0) {
+        const second = isolationViolationsOnce(isolation.admitted, full);
+        const again = new Set(second.coTenancy.concat(second.intrusion));
+        coTenancy = coTenancy.filter((finding) => again.has(finding));
+        intrusion = intrusion.filter((finding) => again.has(finding));
+    }
+    if (intrusion.length === 0) {
+        first.admitted.forEach((admittedKey) => isolation.admitted.add(admittedKey));
+    }
+    return { coTenancy, intrusion };
+}
+
+// Returns at most ISOLATION_OFFENDER_LIMIT of the findings joined with '; ', and the number of the others.
+function isolationReport(findings) {
+    const more = findings.length > ISOLATION_OFFENDER_LIMIT
+        ? '; and ' + (findings.length - ISOLATION_OFFENDER_LIMIT) + ' more' : '';
+    return findings.slice(0, ISOLATION_OFFENDER_LIMIT).join('; ') + more;
+}
+
+// Writes one warning line to stderr naming purpose, the step the check precedes, the number of co-tenancy findings,
+// the findings as isolationReport gives them, that the run continues, that processes outside this run can reach the
+// DevTools endpoint of chrome-headless-shell, and ISOLATION_REQUIREMENT. Line breaks inside the text become spaces.
+function warnCoTenancy(purpose, coTenancy) {
+    const count = coTenancy.length;
+    const line = 'ganttChartMove.dom.test.js warning ' + purpose + ': ' + count + ' co-tenancy finding'
+        + (count === 1 ? '' : 's') + ': ' + isolationReport(coTenancy) + '. The run continues, and processes outside '
+        + 'this run can reach the DevTools endpoint of ' + CHROME_BINARY + '. ' + ISOLATION_REQUIREMENT;
+    process.stderr.write(line.replace(/[\r\n]+/g, ' ') + '\n');
+}
+
+// Checks isolation with workerIsolation(true). Writes the co-tenancy findings, when there are any, with warnCoTenancy,
+// then throws when an intrusion remains; the error names purpose, the step the check precedes, the intrusions as
+// isolationReport gives them and ISOLATION_REQUIREMENT.
+function assertIsolatedWorker(purpose) {
+    const { coTenancy, intrusion } = workerIsolation(true);
+    if (coTenancy.length > 0) {
+        warnCoTenancy(purpose, coTenancy);
+    }
+    if (intrusion.length > 0) {
+        throw new Error('ganttChartMove.dom.test.js stops ' + purpose + ': worker isolation check failed: '
+            + isolationReport(intrusion) + '. ' + ISOLATION_REQUIREMENT);
+    }
+}
+
+// Starts checking the DevTools port port of the running chrome-headless-shell: notes its listening sockets, the
+// runner's own connections to them (the entries of /proc/net/tcp and tcp6 whose inode is a socket of this process) and
+// the entries without a socket (inode 0), such as TIME_WAIT entries, already at a listening address, records them in
+// isolation.devTools and runs checkIsolation at once. Throws when the tables show no listening socket of the port or no
+// connection of the runner to it.
+function watchDevToolsPort(port) {
+    const table = socketTable(['tcp', 'tcp6']);
+    const listening = new Set(table.filter((entry) => entry.state === '0A' && entry.localPort === port)
+        .map((entry) => entry.local));
+    const inodes = socketInodes(process.pid);
+    const own = new Set(table.filter((entry) => inodes.has(entry.inode) && listening.has(entry.remote))
+        .map((entry) => entry.local));
+    if (listening.size === 0 || own.size === 0) {
+        throw new Error('ganttChartMove.dom.test.js cannot find '
+            + (listening.size === 0 ? 'the listening socket of' : 'its own connection to') + ' the DevTools port '
+            + port + ' in /proc/net/tcp and tcp6');
+    }
+    const key = (entry) => entry.protocol + ' ' + entry.local + ' ' + entry.remote;
+    const foreign = (entry) => entry.state !== '0A' && (listening.has(entry.local) || listening.has(entry.remote))
+        && !own.has(entry.local) && !own.has(entry.remote);
+    isolation.devTools = {
+        port,
+        listening,
+        foreign,
+        key,
+        earlier: new Set(table.filter((entry) => foreign(entry) && entry.inode === '0').map(key))
+    };
+    checkIsolation();
+}
+
+// Returns the DevTools findings { coTenancy, intrusion } while watchDevToolsPort checks a port, and two empty lists
+// otherwise. intrusion holds 'a <protocol> connection from port <peer> to the DevTools port <port> (<state>)' for every
+// entry of /proc/net/tcp and tcp6, in any state but LISTEN, one end of which is a listening address of the port and
+// neither end of which is one of the runner's own connections, other than the entries without a socket noted by
+// watchDevToolsPort. coTenancy holds the message of socketTable when those tables cannot be read or parsed, and
+// intrusion is then empty.
+function devToolsPortViolations() {
+    const watch = isolation.devTools;
+    const findings = { coTenancy: [], intrusion: [] };
+    if (!watch) {
+        return findings;
+    }
+    let table;
+    try {
+        table = socketTable(['tcp', 'tcp6']);
+    } catch (error) {
+        findings.coTenancy.push(error.message);
+        return findings;
+    }
+    for (const entry of table) {
+        if (watch.foreign(entry) && !watch.earlier.has(watch.key(entry))) {
+            const peerPort = watch.listening.has(entry.local) ? entry.remotePort : entry.localPort;
+            findings.intrusion.push('a ' + entry.protocol + ' connection from port ' + peerPort
+                + ' to the DevTools port ' + watch.port + ' (' + (TCP_STATE_NAMES[entry.state] || entry.state) + ')');
+        }
+    }
+    return findings;
+}
+
+// Collects the intrusions of workerIsolation(false) and devToolsPortViolations() and hands them to failIsolation when
+// there are any; co-tenancy findings are not acted on. An error thrown while collecting counts as an intrusion. Does
+// nothing once isolation.error is set.
+function checkIsolation() {
+    if (isolation.error) {
+        return;
+    }
+    let intrusions;
+    try {
+        intrusions = [...new Set(workerIsolation(false).intrusion.concat(devToolsPortViolations().intrusion))];
+    } catch (error) {
+        intrusions = [error.message];
+    }
+    if (intrusions.length > 0) {
+        failIsolation(intrusions);
+    }
+}
+
+// Acts on the first call only: stops the isolation watch, records isolation.error, which names the intrusions as
+// isolationReport gives them, writes it to stderr, sets process.exitCode to 1 and stops the browser with
+// terminateBrowser, recording the promise of that stop in isolation.stopping. From then on every case fails before it
+// runs and the after hook fails.
+function failIsolation(intrusions) {
+    if (isolation.error) {
+        return;
+    }
+    stopIsolationWatch();
+    isolation.error = new Error('ganttChartMove.dom.test.js stopped the run: worker isolation check failed while it '
+        + 'ran: ' + isolationReport(intrusions) + '. ' + ISOLATION_REQUIREMENT);
+    process.exitCode = 1;
+    process.stderr.write(isolation.error.message + '\n');
+    isolation.stopping = terminateBrowser(false, isolation.error.message).then(() => null, (error) => error);
+}
+
+// Runs checkIsolation, which looks for intrusions only, every ISOLATION_WATCH_INTERVAL_MS until stopIsolationWatch or
+// failIsolation.
+function startIsolationWatch() {
+    isolation.timer = setInterval(checkIsolation, ISOLATION_WATCH_INTERVAL_MS);
+    isolation.timer.unref();
+}
+
+// Stops the isolation watch.
+function stopIsolationWatch() {
+    clearInterval(isolation.timer);
+    isolation.timer = null;
+}
+
 // Starts chrome-headless-shell, passes a spawned process and the promise of its exit to onSpawn at once, and resolves
-// with its process, the promise of its exit and its DevTools WebSocket URL.
+// with its process, the promise of its exit and its DevTools WebSocket URL. Before the start, assertIsolatedWorker
+// writes co-tenancy findings as a warning line to stderr. Rejects without starting it once the isolation watch has
+// found an intrusion and when assertIsolatedWorker finds one.
 function launchChrome(profileDir, onSpawn) {
     return new Promise((resolve, reject) => {
+        if (isolation.error) {
+            throw isolation.error;
+        }
+        assertIsolatedWorker('before it starts ' + CHROME_BINARY);
         const args = [
             '--remote-debugging-port=0',
             '--user-data-dir=' + profileDir,
             '--no-first-run',
             '--no-default-browser-check',
-            '--allow-file-access-from-files',
             '--disable-dev-shm-usage',
             ...(process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : []),
             'about:blank'
@@ -260,7 +752,8 @@ function launchChrome(profileDir, onSpawn) {
                 return;
             }
             stderr += chunk;
-            const match = /DevTools listening on (ws:\/\/\S+)/.exec(stderr);
+            // The endpoint counts once its line has ended.
+            const match = /DevTools listening on (ws:\/\/\S+)\r?\n/.exec(stderr);
             if (match) {
                 settled = true;
                 clearTimeout(timer);
@@ -418,9 +911,24 @@ class DevToolsClient {
         };
     }
 
-    // Dispatches a command response to its caller and an event to its listeners.
+    // Dispatches a command response to its caller and an event to its listeners. A frame that is not a JSON object
+    // closes the client with close: every pending and later command rejects with an error naming the frame's length
+    // and the parse failure, and the WebSocket is closed.
     onMessage(data) {
-        const message = JSON.parse(typeof data === 'string' ? data : Buffer.from(data).toString('utf8'));
+        const text = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
+        let message;
+        try {
+            message = JSON.parse(text);
+        } catch (error) {
+            this.close('the DevTools WebSocket sent a frame of ' + text.length + ' characters that is not JSON ('
+                + error.message + ')');
+            return;
+        }
+        if (message === null || typeof message !== 'object' || Array.isArray(message)) {
+            this.close('the DevTools WebSocket sent a frame of ' + text.length + ' characters that is not a JSON '
+                + 'object');
+            return;
+        }
         if (message.id !== undefined) {
             const entry = this.pending.get(message.id);
             if (!entry) {
@@ -469,7 +977,8 @@ class DevToolsClient {
     }
 }
 
-// Starts chrome-headless-shell, attaches to a new page and enables the Page and Runtime domains at a 1024 x 768 viewport.
+// Starts chrome-headless-shell, connects to it, has the isolation watch check its DevTools port (watchDevToolsPort),
+// attaches to a new page and enables the Page and Runtime domains at a 1024 x 768 viewport.
 async function startBrowser() {
     browser.profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gantt-dom-'));
     const launched = await launchChrome(browser.profileDir, (chrome, exited) => {
@@ -477,6 +986,7 @@ async function startBrowser() {
         browser.exited = exited;
     });
     browser.client = new DevToolsClient(await connectWebSocket(launched.endpoint));
+    watchDevToolsPort(Number(new URL(launched.endpoint).port || 80));
 
     const { targetId } = await browser.client.send('Target.createTarget', { url: 'about:blank' });
     const { sessionId } = await browser.client.send('Target.attachToTarget', { targetId, flatten: true });
@@ -493,8 +1003,10 @@ function isRunning(chrome) {
     return !!chrome && chrome.pid !== undefined && chrome.exitCode === null && chrome.signalCode === null;
 }
 
-// Clears the process, exit promise, profile directory, DevTools client and page session of the browser.
+// Clears the process, exit promise, profile directory, DevTools client and page session of the browser, and stops the
+// isolation watch's check of its DevTools port.
 function resetBrowser() {
+    isolation.devTools = null;
     browser.process = null;
     browser.exited = null;
     browser.profileDir = null;
@@ -2365,44 +2877,130 @@ const CASES = [
 
     },
     {
-        name: 'a malformed HTTP 200 moveItem reply snaps back through the transport error path',
+        name: 'a press whose bar cannot capture the pointer starts no drag and sends nothing',
         run: async () => {
             await openBoard('h1');
-            await setNextMoveResponse({ kind: 'httpReply', status: 200, body: 'not-json' });
+            await evaluate('window.__pressDebugMessages = []; (function () { var debug = QCD.debug;'
+                + ' QCD.debug = function (message) { window.__pressDebugMessages.push(String(message)); debug(message); };'
+                + ' }()); true');
+            // Returns the recorded QCD.debug messages of ignored presses and clears the record.
+            const takeIgnoredPressMessages = async () => (await evaluate('window.__pressDebugMessages.splice(0)'))
+                .filter((message) => message.startsWith('Gantt item press ignored: '));
             const preDrag = await barStyle(7);
-            const rect = await barRect(7);
+            // Own setPointerCapture properties of bar 7 under which a press cannot capture the pointer, each with the
+            // QCD.debug message the ignored press logs.
+            const captureOverrides = [
+                {
+                    description: 'no setPointerCapture method',
+                    valueExpr: 'undefined',
+                    message: /cannot be captured: the item has no setPointerCapture method$/
+                },
+                {
+                    description: 'a setPointerCapture that throws',
+                    valueExpr: 'function () { throw new Error("capture refused by the DOM case"); }',
+                    message: /cannot be captured: Error: capture refused by the DOM case$/
+                },
+                {
+                    description: 'a setPointerCapture that leaves hasPointerCapture false',
+                    valueExpr: 'function () {}',
+                    message: /is not captured by the item$/
+                }
+            ];
 
-            await drag(rect, horizontalSteps(10, 40));
+            for (const { description, valueExpr, message } of captureOverrides) {
+                await evaluate(barExpr(7) + '.setPointerCapture = ' + valueExpr + '; true');
+                assert.equal(await evaluate('Object.prototype.hasOwnProperty.call(' + barExpr(7) + ', "setPointerCapture")'),
+                    true, description + ': own setPointerCapture');
+                const last = await drag(await barRect(7), horizontalSteps(10, 40), { release: false });
+                const held = await barStyle(7);
+                assert.equal(held.left, preDrag.left, description + ': left during the drag');
+                assert.equal(held.top, preDrag.top, description + ': top during the drag');
+                assert.ok(!held.classes.includes('ganttItemDragging'),
+                    description + ': classes during the drag: ' + held.classes.join(' '));
+                await release(last.x, last.y);
+                await afterDrop(0);
+                assertRestored(await barStyle(7), preDrag);
+                const ignoredPressMessages = await takeIgnoredPressMessages();
+                assert.equal(ignoredPressMessages.length, 1, description + ': ' + JSON.stringify(ignoredPressMessages));
+                assert.match(ignoredPressMessages[0], message, description);
+            }
+
+            assert.equal(await evaluate('delete ' + barExpr(7) + '.setPointerCapture'), true);
+            assert.equal(await evaluate('typeof ' + barExpr(7) + '.setPointerCapture'), 'function');
+            await drag(await barRect(7), [[13, 0]]);
             const calls = await afterDrop(1);
-            await waitFor('(function () { var bar = ' + barExpr(7) + ';'
-                + ' return bar.style.left === ' + JSON.stringify(preDrag.left)
-                + ' && bar.style.top === ' + JSON.stringify(preDrag.top)
-                + ' && !bar.classList.contains("ganttItemDragging") && ' + IS_UNBLOCKED_EXPR + '; }())');
-            assertRestored(await barStyle(7), preDrag);
-            assert.equal(await isUnblocked(), true);
-
-            const requests = await evaluate('window.__httpRequests');
-            assert.equal(requests.length, 1, 'HTTP requests: ' + JSON.stringify(requests));
-            assert.equal(requests[0].method, 'POST');
-            assert.equal(requests[0].url, '/page/cmmsMachineParts/productionMaintenanceGantt.html');
-            assert.equal(requests[0].async, true);
-            assert.equal(requests[0].headers['Content-Type'], 'application/json; charset=utf-8');
-            const requestBody = JSON.parse(requests[0].body);
-            assert.equal(requestBody.event.name, 'moveItem');
-            assert.deepEqual(requestBody.event.args, calls[0].args);
-            assert.deepEqual(await evaluate('window.__messages'),
-                [{ type: 'failure', content: 'connection error: parsererror' }]);
-            assert.deepEqual(await evaluate('window.__headerButtonCalls'), ['block', 'unblock']);
+            assert.equal(calls[0].payload.itemId, 7);
+            assert.equal(calls[0].payload.dateFrom, '2026-06-01 09:30:00');
+            assert.deepEqual(await takeIgnoredPressMessages(), []);
             await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'a malformed HTTP 200 moveItem reply that the transport drops snaps the bar back and unblocks the chart',
+        run: async () => {
+            // Uncaught exceptions of the page that the DevTools Protocol reports with Runtime.exceptionThrown after the
+            // board is open, each as the text of the report followed by one '\n    at <url>:<line>:<column>' line per
+            // call frame of its stack trace, with one-based line and column numbers.
+            const exceptions = [];
+            // Asserts that window.__pageErrors holds exactly one error and that the page threw exactly one uncaught
+            // exception, a SyntaxError whose stack holds a frame in connector.js: the error QCDConnector.sendPost
+            // throws while it parses the reply.
+            const assertOnlyConnectorSyntaxError = async () => {
+                const pageErrors = await evaluate('window.__pageErrors');
+                assert.equal(pageErrors.length, 1, 'page errors: ' + JSON.stringify(pageErrors));
+                assert.equal(exceptions.length, 1, 'uncaught exceptions: ' + JSON.stringify(exceptions));
+                assert.match(exceptions[0], /^Uncaught SyntaxError: /, 'uncaught exception: ' + exceptions[0]);
+                assert.match(exceptions[0], /\n {4}at \S*\/js\/core\/qcd\/utils\/connector\.js:\d+:\d+/,
+                    'uncaught exception: ' + exceptions[0]);
+            };
+            await openBoard('h1');
+            const removeExceptionListener = browser.client.on('Runtime.exceptionThrown', browser.sessionId,
+                (params) => {
+                    const details = (params && params.exceptionDetails) || {};
+                    const frames = (details.stackTrace && details.stackTrace.callFrames) || [];
+                    exceptions.push(String(details.text) + frames.map((frame) => '\n    at ' + frame.url + ':'
+                        + (frame.lineNumber + 1) + ':' + (frame.columnNumber + 1)).join(''));
+                });
+            try {
+                await setNextMoveResponse({ kind: 'httpReply', status: 200, body: 'not-json' });
+                const preDrag = await barStyle(7);
+                const rect = await barRect(7);
 
-            // A null next response answers the next moveItem with the fixture's default response.
-            await setNextMoveResponse(null);
-            await drag(await barRect(7), horizontalSteps(10, 40));
-            const nextCalls = await afterDrop(2);
-            assert.equal(nextCalls[1].payload.itemId, 7);
-            await waitFor(IS_UNBLOCKED_EXPR);
-            assert.equal((await evaluate('window.__httpRequests')).length, 1);
-            await assertNoPageErrors();
+                await drag(rect, horizontalSteps(10, 40));
+                const calls = await afterDrop(1);
+                await waitFor('(function () { var bar = ' + barExpr(7) + ';'
+                    + ' return bar.style.left === ' + JSON.stringify(preDrag.left)
+                    + ' && bar.style.top === ' + JSON.stringify(preDrag.top)
+                    + ' && !bar.classList.contains("ganttItemDragging") && ' + IS_UNBLOCKED_EXPR + '; }())');
+                assertRestored(await barStyle(7), preDrag);
+                assert.equal(await isUnblocked(), true);
+
+                const requests = await evaluate('window.__httpRequests');
+                assert.equal(requests.length, 1, 'HTTP requests: ' + JSON.stringify(requests));
+                assert.equal(requests[0].method, 'POST');
+                assert.equal(requests[0].url, '/page/cmmsMachineParts/productionMaintenanceGantt.html');
+                assert.equal(requests[0].async, true);
+                assert.equal(requests[0].headers['Content-Type'], 'application/json; charset=utf-8');
+                const requestBody = JSON.parse(requests[0].body);
+                assert.equal(requestBody.event.name, 'moveItem');
+                assert.deepEqual(requestBody.event.args, calls[0].args);
+                assert.deepEqual(await evaluate('window.__messages'), []);
+                const headerButtonCalls = await evaluate('window.__headerButtonCalls');
+                assert.equal(headerButtonCalls[0], 'block',
+                    'header button calls: ' + JSON.stringify(headerButtonCalls));
+                await assertOnlyConnectorSyntaxError();
+
+                // A null next response answers the next moveItem with the fixture's default response.
+                await setNextMoveResponse(null);
+                await drag(await barRect(7), horizontalSteps(10, 40));
+                const nextCalls = await afterDrop(2);
+                assert.equal(nextCalls[1].payload.itemId, 7);
+                await waitFor(IS_UNBLOCKED_EXPR);
+                assert.equal((await evaluate('window.__httpRequests')).length, 1);
+                await assertOnlyConnectorSyntaxError();
+            } finally {
+                removeExceptionListener();
+            }
         }
     },
     {
@@ -2582,6 +3180,8 @@ const lifecycle = { starting: null, startError: null, stopping: false };
 
 assertFixtureFile(FIXTURE_PATH);
 assertCaseManifest(CASES, EXPECTED_CASE_NAMES);
+assertIsolatedWorker('before it registers a case');
+startIsolationWatch();
 
 // Starts the browser unless the after hook has begun, recording the start and its error.
 before(async () => {
@@ -2595,16 +3195,28 @@ before(async () => {
     await lifecycle.starting;
 }, { timeout: BEFORE_TIMEOUT_MS });
 
-// Waits up to BEFORE_TIMEOUT_MS for a browser start still in progress, stops the browser, then fails the run with the
-// start error, the stop error and the list of manifest cases that never started, each when present.
+// Stops the isolation watch, waits up to BEFORE_TIMEOUT_MS for a browser start still in progress, waits for a stop the
+// isolation watch began, stops the browser, then fails the run with the start error, the error of the watch's stop,
+// the intrusion the watch found, the stop error and the list of manifest cases that never started, each when present;
+// co-tenancy findings never fail it.
 after(async () => {
     lifecycle.stopping = true;
+    stopIsolationWatch();
     const failures = [];
     if (lifecycle.starting && !(await settlesWithin(lifecycle.starting, BEFORE_TIMEOUT_MS))) {
         failures.push(new Error('The browser start did not settle within ' + BEFORE_TIMEOUT_MS + ' ms'));
     }
     if (lifecycle.startError) {
         failures.push(lifecycle.startError);
+    }
+    if (isolation.stopping) {
+        const isolationStopError = await isolation.stopping;
+        if (isolationStopError) {
+            failures.push(isolationStopError);
+        }
+    }
+    if (isolation.error) {
+        failures.push(isolation.error);
     }
     try {
         await stopBrowser();
@@ -2670,10 +3282,14 @@ for (const signal of TERMINATION_SIGNALS) {
     process.on(signal, onTerminationSignal);
 }
 
-// Registers every case; each records its name when its run starts and when its run resolves.
+// Registers every case; each records its name when its run starts and when its run resolves, and fails before it runs
+// once the isolation watch has found an intrusion; co-tenancy findings never fail a case.
 for (const c of CASES) {
     test(c.name, { timeout: CASE_TIMEOUT_MS }, async () => {
         execution.started.add(c.name);
+        if (isolation.error) {
+            throw isolation.error;
+        }
         await c.run();
         execution.completed.add(c.name);
     });

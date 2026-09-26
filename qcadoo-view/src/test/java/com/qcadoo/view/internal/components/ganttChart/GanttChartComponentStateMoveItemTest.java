@@ -43,8 +43,12 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.util.ReflectionTestUtils.getField;
 import static org.springframework.test.util.ReflectionTestUtils.setField;
 
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -55,9 +59,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.TimeZone;
 
+import org.apache.commons.lang3.StringUtils;
+import org.codehaus.jackson.JsonFactory;
+import org.codehaus.jackson.JsonParser;
+import org.codehaus.jackson.JsonToken;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.json.JSONArray;
@@ -143,6 +152,8 @@ public class GanttChartComponentStateMoveItemTest {
 
     private static final String OFF_GRID = "offGrid";
 
+    private static final String DATE_OUT_OF_RANGE = "dateOutOfRange";
+
     private static final String ORIGIN_ROW = "L1";
 
     private static final String TARGET_ROW = "L2";
@@ -177,6 +188,9 @@ public class GanttChartComponentStateMoveItemTest {
     private static final String VALID_PAYLOAD_TEXT = "{\"itemId\":7,\"row\":\"L2\",\"dateFrom\":\"2026-06-01 10:30:00\","
             + "\"originalRow\":\"L1\",\"originalName\":\"O-1\",\"originalDateFrom\":\"2026-06-01 09:00:00\","
             + "\"originalDateTo\":\"2026-06-01 10:00:00\"}";
+
+    /** Longest moveItem payload, in characters, that is parsed. */
+    private static final int MOVE_PAYLOAD_MAX_LENGTH = 16384;
 
     /** Payload keys whose values must be JSON strings. */
     private static final List<String> PAYLOAD_TEXT_KEYS = Collections.unmodifiableList(Arrays.asList("row", "dateFrom",
@@ -695,13 +709,13 @@ public class GanttChartComponentStateMoveItemTest {
     }
 
     /**
-     * Creates a move request with a mocked item and the given context, and returns the {@link IllegalStateException} the
+     * Creates a move request with a mocked item and the given context, and returns the {@link IllegalArgumentException} the
      * constructor throws, or null when it throws none.
      */
-    private IllegalStateException moveRequestFailure(final JSONObject context) {
+    private IllegalArgumentException moveRequestFailure(final JSONObject context) {
         try {
             createMoveRequest(mock(GanttChartItem.class), context);
-        } catch (IllegalStateException e) {
+        } catch (IllegalArgumentException e) {
             return e;
         }
         return null;
@@ -772,21 +786,75 @@ public class GanttChartComponentStateMoveItemTest {
     }
 
     /**
-     * A context whose JSON text cannot be parsed makes the move request constructor fail with an {@link IllegalStateException}
-     * caused by the {@link JSONException}; a context whose JSON text cannot be written (its {@code toString} returns null)
-     * makes it fail with an {@link IllegalStateException} without a cause.
+     * The move request bounds are 3 levels, 64 values and 16384 characters. isWithinContextBounds is false for each context
+     * of {@link #outOfBoundsContexts()}, and the move request constructor throws an {@link IllegalArgumentException} on each
+     * of them.
      */
     @Test
-    public final void shouldFailWithIllegalStateWhenMoveRequestContextCannotBeCopied() throws Exception {
+    public final void shouldRejectContextBeyondBoundsInMoveRequest() throws Exception {
         // given
-        JSONObject unparseableContext = new JSONObject() {
+        Map<String, JSONObject> contextByCase = outOfBoundsContexts();
+        Map<String, Boolean> withinBoundsByCase = new LinkedHashMap<String, Boolean>();
+        Map<String, IllegalArgumentException> failureByCase = new LinkedHashMap<String, IllegalArgumentException>();
 
-            @Override
-            public String toString() {
-                return "{";
-            }
+        // when
+        for (Map.Entry<String, JSONObject> contextCase : contextByCase.entrySet()) {
+            withinBoundsByCase.put(contextCase.getKey(), GanttChartMoveRequest.isWithinContextBounds(contextCase.getValue()));
+            failureByCase.put(contextCase.getKey(), moveRequestFailure(contextCase.getValue()));
+        }
 
-        };
+        // then
+        assertEquals(3, GanttChartMoveRequest.CONTEXT_MAX_DEPTH);
+        assertEquals(64, GanttChartMoveRequest.CONTEXT_MAX_VALUES);
+        assertEquals(16384, GanttChartMoveRequest.CONTEXT_MAX_TEXT_LENGTH);
+        assertEquals(14, contextByCase.size());
+        for (String caseName : contextByCase.keySet()) {
+            assertFalse(caseName, withinBoundsByCase.get(caseName));
+            assertNotNull(caseName, failureByCase.get(caseName));
+        }
+    }
+
+    /**
+     * isWithinContextBounds is true for a null context and for each context of {@link #atBoundsContexts()}, and a move
+     * request built with each of those contexts returns a copy with the same content.
+     */
+    @Test
+    public final void shouldCopyContextWithinBoundsIntoMoveRequest() throws Exception {
+        // given
+        Map<String, JSONObject> contextByCase = atBoundsContexts();
+        Map<String, Boolean> withinBoundsByCase = new LinkedHashMap<String, Boolean>();
+        Map<String, JSONObject> copyByCase = new LinkedHashMap<String, JSONObject>();
+
+        // when
+        boolean nullWithinBounds = GanttChartMoveRequest.isWithinContextBounds(null);
+        for (Map.Entry<String, JSONObject> contextCase : contextByCase.entrySet()) {
+            withinBoundsByCase.put(contextCase.getKey(), GanttChartMoveRequest.isWithinContextBounds(contextCase.getValue()));
+            copyByCase.put(contextCase.getKey(), createMoveRequest(mock(GanttChartItem.class), contextCase.getValue())
+                    .getContext());
+        }
+
+        // then
+        assertTrue(nullWithinBounds);
+        assertEquals(6, contextByCase.size());
+        for (Map.Entry<String, JSONObject> contextCase : contextByCase.entrySet()) {
+            assertTrue(contextCase.getKey(), withinBoundsByCase.get(contextCase.getKey()));
+            assertSameJsonContent(contextCase.getKey(), contextCase.getValue(), copyByCase.get(contextCase.getKey()));
+        }
+    }
+
+    /**
+     * The context copy of a move request holds new nested objects and arrays. Adding a member to a nested object and an
+     * element to a nested array, at levels 2 and 3, of the given context after construction, or of a context the request
+     * returned, leaves the next returned context unchanged. A context whose {@code toString} returns null is copied member
+     * by member.
+     */
+    @Test
+    public final void shouldCopyNestedContextObjectsAndArraysIndependently() throws Exception {
+        // given
+        JSONObject context = new JSONObject();
+        context.put(CONTEXT_SCHEDULE_ID, SCHEDULE_ID);
+        context.put("nested", new JSONObject().put("key", "value"));
+        context.put("list", new JSONArray().put("first").put(new JSONArray().put("inner")));
         JSONObject unwritableContext = new JSONObject() {
 
             @Override
@@ -795,16 +863,216 @@ public class GanttChartComponentStateMoveItemTest {
             }
 
         };
+        unwritableContext.put(CONTEXT_SCHEDULE_ID, SCHEDULE_ID);
+        GanttChartMoveRequest moveRequest = createMoveRequest(mock(GanttChartItem.class), context);
+        GanttChartMoveRequest unwritableContextRequest = createMoveRequest(mock(GanttChartItem.class), unwritableContext);
 
         // when
-        IllegalStateException unparseableFailure = moveRequestFailure(unparseableContext);
-        IllegalStateException unwritableFailure = moveRequestFailure(unwritableContext);
+        context.getJSONObject("nested").put("added", "value");
+        context.getJSONArray("list").put("added");
+        context.getJSONArray("list").getJSONArray(1).put("added");
+        JSONObject firstContext = moveRequest.getContext();
+        firstContext.getJSONObject("nested").put("changed", "value");
+        firstContext.getJSONArray("list").put("changed");
+        firstContext.getJSONArray("list").getJSONArray(1).put("changed");
+        JSONObject secondContext = moveRequest.getContext();
 
         // then
-        assertNotNull(unparseableFailure);
-        assertTrue(unparseableFailure.getCause() instanceof JSONException);
-        assertNotNull(unwritableFailure);
-        assertNull(unwritableFailure.getCause());
+        assertEquals(SCHEDULE_ID, secondContext.getString(CONTEXT_SCHEDULE_ID));
+        assertEquals(Collections.singleton("key"), keySet(secondContext.getJSONObject("nested")));
+        JSONArray list = secondContext.getJSONArray("list");
+        assertEquals(2, list.length());
+        assertEquals("first", list.getString(0));
+        assertEquals(1, list.getJSONArray(1).length());
+        assertEquals("inner", list.getJSONArray(1).getString(0));
+        assertNotSame(firstContext.getJSONObject("nested"), secondContext.getJSONObject("nested"));
+        assertNotSame(firstContext.getJSONArray("list").getJSONArray(1), list.getJSONArray(1));
+        assertEquals(SCHEDULE_ID, unwritableContextRequest.getContext().getString(CONTEXT_SCHEDULE_ID));
+    }
+
+    /**
+     * A drop on a board whose component context is one of {@link #outOfBoundsContexts()} is an invalid request carrying the
+     * item id, before the resolver runs, and the item stays unchanged.
+     */
+    @Test
+    public final void shouldRejectMoveWhenComponentContextIsBeyondBounds() throws Exception {
+        // given
+        GanttChartModifiableItem item = mockModifiableItem(MOVED_ITEM_ID, ORIGINAL_DATE_FROM, ORIGINAL_DATE_TO);
+        stubResolverWith(boardWithOriginRowItem(item));
+        Map<String, GanttChartComponentState> stateByCase = new LinkedHashMap<String, GanttChartComponentState>();
+        for (Map.Entry<String, JSONObject> contextCase : outOfBoundsContexts().entrySet()) {
+            stateByCase.put(contextCase.getKey(), createStateWithContext(contextCase.getValue()));
+        }
+
+        // when
+        for (GanttChartComponentState state : stateByCase.values()) {
+            move(state, validPayload());
+        }
+
+        // then
+        assertInvalidRequestForEach(stateByCase, MOVED_ITEM_ID);
+        verify(resolver, never()).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+        verifyNotMutated(item);
+    }
+
+    /**
+     * A drop on a board whose component context is one of {@link #atBoundsContexts()} builds a move request whose context
+     * has the same content.
+     */
+    @Test
+    public final void shouldBuildMoveRequestWhenComponentContextIsAtBounds() throws Exception {
+        // given
+        stubResolverForDay(2026, 6, 1);
+        Map<String, JSONObject> contextByCase = atBoundsContexts();
+        Map<String, GanttChartComponentState> stateByCase = new LinkedHashMap<String, GanttChartComponentState>();
+        for (Map.Entry<String, JSONObject> contextCase : contextByCase.entrySet()) {
+            stateByCase.put(contextCase.getKey(), createStateWithContext(contextCase.getValue()));
+        }
+
+        // when
+        for (GanttChartComponentState state : stateByCase.values()) {
+            move(state, validPayload());
+        }
+
+        // then
+        for (Map.Entry<String, JSONObject> contextCase : contextByCase.entrySet()) {
+            GanttChartMoveRequest moveRequest = stateByCase.get(contextCase.getKey()).getMoveRequest();
+            assertNotNull(contextCase.getKey(), moveRequest);
+            assertSameJsonContent(contextCase.getKey(), contextCase.getValue(), moveRequest.getContext());
+        }
+    }
+
+    /**
+     * Creates a move-enabled state initialized in {@link Locale#ENGLISH} at zoom level H1 for 2026-06-01 to 2026-06-02 whose
+     * request carries the given component context.
+     */
+    private GanttChartComponentState createStateWithContext(final JSONObject context) throws Exception {
+        GanttChartComponentState state = createUninitializedState(true);
+
+        JSONObject headerParameters = new JSONObject();
+        headerParameters.put("scale", "H1");
+        headerParameters.put("dateFrom", HEADER_DATE_FROM);
+        headerParameters.put("dateTo", HEADER_DATE_TO);
+
+        JSONObject content = new JSONObject();
+        content.put("headerParameters", headerParameters);
+
+        JSONObject json = new JSONObject();
+        json.put("content", content);
+        json.put("context", context);
+
+        state.initialize(json, Locale.ENGLISH);
+        return state;
+    }
+
+    /**
+     * Returns contexts beyond the move request bounds by case name: 65 members; 65 values ending with an array element, or
+     * with a member after a nested array; an array longer than the values left; an object and an array at level 4; 16385
+     * characters in one string value, over three levels, or in one member name; a {@link Date} value; a Java null array
+     * element; an {@link Integer} member name; an object containing itself; and an array containing itself.
+     */
+    private Map<String, JSONObject> outOfBoundsContexts() throws JSONException {
+        Map<String, JSONObject> contextByCase = new LinkedHashMap<String, JSONObject>();
+        contextByCase.put("65 members", contextWithMembers(65));
+        contextByCase.put("65 values ending with an array element", new JSONObject().put("a",
+                new JSONArray().put(arrayOfIntegers(58)).put(1).put(2).put(3).put(4).put(5)));
+        contextByCase.put("65 values ending with a member", new JSONObject().put("a", arrayOfIntegers(62)).put("b", 1)
+                .put("c", 2));
+        contextByCase.put("array longer than the values left", new JSONObject().put("a", arrayOfIntegers(64)));
+        contextByCase.put("object at level 4", new JSONObject().put("a",
+                new JSONObject().put("b", new JSONObject().put("c", new JSONObject()))));
+        contextByCase.put("array at level 4", new JSONObject().put("a",
+                new JSONArray().put(new JSONArray().put(new JSONArray()))));
+        contextByCase.put("16385 characters in one string", new JSONObject().put(CONTEXT_SCHEDULE_ID,
+                StringUtils.repeat('5', 16385 - CONTEXT_SCHEDULE_ID.length())));
+        contextByCase.put("16385 characters over three levels", new JSONObject().put("a",
+                new JSONObject().put("b", new JSONArray().put(StringUtils.repeat('x', 16383)))));
+        contextByCase.put("member name of 16385 characters", new JSONObject().put(StringUtils.repeat('k', 16385), 1));
+        contextByCase.put("Date value", new JSONObject(Collections.singletonMap(CONTEXT_SCHEDULE_ID, new Date(0L))));
+        contextByCase.put("Java null array element", new JSONObject().put("a", new JSONArray().put((Object) null)));
+        contextByCase.put("Integer member name", new JSONObject(Collections.singletonMap(Integer.valueOf(1), SCHEDULE_ID)));
+
+        JSONObject selfContainingObject = new JSONObject();
+        selfContainingObject.put("self", selfContainingObject);
+        contextByCase.put("object containing itself", selfContainingObject);
+
+        JSONArray selfContainingArray = new JSONArray();
+        selfContainingArray.put(selfContainingArray);
+        contextByCase.put("array containing itself", new JSONObject().put("a", selfContainingArray));
+        return contextByCase;
+    }
+
+    /**
+     * Returns contexts at the move request bounds by case name: 64 members; 64 values over three levels; an object and an
+     * array at level 3; 16384 characters of member name and string value; and one value of each supported type.
+     */
+    private Map<String, JSONObject> atBoundsContexts() throws JSONException {
+        Map<String, JSONObject> contextByCase = new LinkedHashMap<String, JSONObject>();
+        contextByCase.put("64 members", contextWithMembers(64));
+        contextByCase.put("64 values over three levels", new JSONObject().put("a",
+                new JSONArray().put(arrayOfIntegers(57)).put(1).put(2).put(3).put(4).put(5)));
+        contextByCase.put("object at level 3", new JSONObject().put("a",
+                new JSONObject().put("b", new JSONObject().put("c", 1))));
+        contextByCase.put("array at level 3", new JSONObject().put("a", new JSONArray().put(new JSONArray().put(1))));
+        contextByCase.put("16384 characters", new JSONObject().put(CONTEXT_SCHEDULE_ID,
+                StringUtils.repeat('5', 16384 - CONTEXT_SCHEDULE_ID.length())));
+
+        JSONObject everyType = new JSONObject();
+        everyType.put("string", SCHEDULE_ID);
+        everyType.put("boolean", true);
+        everyType.put("integer", 1);
+        everyType.put("long", Long.MAX_VALUE);
+        everyType.put("double", 1.5);
+        everyType.put("null", JSONObject.NULL);
+        everyType.put("object", new JSONObject());
+        everyType.put("array", new JSONArray());
+        contextByCase.put("every supported value type", everyType);
+        return contextByCase;
+    }
+
+    /** Returns a context holding the given number of members {@code k0}, {@code k1} and so on, each valued with its index. */
+    private JSONObject contextWithMembers(final int count) throws JSONException {
+        JSONObject context = new JSONObject();
+        for (int index = 0; index < count; index++) {
+            context.put("k" + index, index);
+        }
+        return context;
+    }
+
+    /** Returns an array of the given number of {@link Integer} elements 0, 1 and so on. */
+    private JSONArray arrayOfIntegers(final int count) {
+        JSONArray array = new JSONArray();
+        for (int index = 0; index < count; index++) {
+            array.put(index);
+        }
+        return array;
+    }
+
+    /**
+     * Asserts that two JSON values have the same content: objects with the same member names and values of the same
+     * content, arrays with elements of the same content in the same order, and equal other values.
+     */
+    private void assertSameJsonContent(final String message, final Object expected, final Object actual)
+            throws JSONException {
+        if (expected instanceof JSONObject) {
+            assertTrue(message, actual instanceof JSONObject);
+            JSONObject expectedObject = (JSONObject) expected;
+            JSONObject actualObject = (JSONObject) actual;
+            assertEquals(message, keySet(expectedObject), keySet(actualObject));
+            for (String name : keySet(expectedObject)) {
+                assertSameJsonContent(message + "." + name, expectedObject.get(name), actualObject.get(name));
+            }
+        } else if (expected instanceof JSONArray) {
+            assertTrue(message, actual instanceof JSONArray);
+            JSONArray expectedArray = (JSONArray) expected;
+            JSONArray actualArray = (JSONArray) actual;
+            assertEquals(message, expectedArray.length(), actualArray.length());
+            for (int index = 0; index < expectedArray.length(); index++) {
+                assertSameJsonContent(message + "[" + index + "]", expectedArray.get(index), actualArray.get(index));
+            }
+        } else {
+            assertEquals(message, expected, actual);
+        }
     }
 
     /**
@@ -1224,9 +1492,11 @@ public class GanttChartComponentStateMoveItemTest {
     }
 
     /**
-     * No drop can name an item without an entity id: a null item id is an invalid request that never reaches the resolver,
-     * and a numeric id that matches no resolved item, on a board holding only id-less or missing items, is rejected as not
-     * movable while the id-less item stays unchanged.
+     * No drop can name an item without an entity id. A null item id is an invalid request that never reaches the resolver.
+     * The unknown numeric id 99 on the ordinary board, which holds {@code O-1} (entity id 7) and the id-less {@code E-1}, is
+     * rejected as not movable with the item id 99. The id 7 on a board holding only an id-less item and a null item, and on
+     * a null board, is rejected as not movable, and the id-less item stays unchanged. The resolver runs once for each of
+     * these three numeric-id drops.
      */
     @Test
     public final void shouldRejectMoveForItemWithoutEntityId() throws Exception {
@@ -1324,6 +1594,123 @@ public class GanttChartComponentStateMoveItemTest {
         assertNotNull(halfHourState.getMoveRequest());
         assertEquals(utcMillis(2026, 6, 1, 10, 30), halfHourState.getMoveRequest().getDateFrom().getTime());
     }
+
+    /**
+     * A drop whose {@code dateFrom} lies in year 3000 or in year 1499 is rejected as out of the date range, with the
+     * translation arguments 1500 and 2500, carrying the item id, before the resolver runs, and the item stays unchanged. The
+     * same year-3000 drop on a board whose component context holds 65 members is an invalid request. A drop at
+     * 1500-01-01 00:00:00 builds a move request.
+     */
+    @Test
+    public final void shouldRejectDropWhoseStartYearIsOutsideModelRange() throws Exception {
+        // given
+        GanttChartModifiableItem item = mockModifiableItem(MOVED_ITEM_ID, ORIGINAL_DATE_FROM, ORIGINAL_DATE_TO);
+        stubResolverWith(boardWithOriginRowItem(item));
+        GanttChartComponentState year3000State = createState(true, HEADER_DATE_FROM, HEADER_DATE_TO);
+        GanttChartComponentState year1499State = createState(true, HEADER_DATE_FROM, HEADER_DATE_TO);
+        GanttChartComponentState outOfBoundsContextState = createStateWithContext(contextWithMembers(65));
+
+        // when
+        move(year3000State, payload(MOVED_ITEM_ID, TARGET_ROW, "3000-01-01 10:30:00"));
+        move(year1499State, payload(MOVED_ITEM_ID, TARGET_ROW, "1499-12-31 23:30:00"));
+        move(outOfBoundsContextState, payload(MOVED_ITEM_ID, TARGET_ROW, "3000-01-01 10:30:00"));
+
+        // then
+        assertRejectedBy("year 3000", year3000State, DATE_OUT_OF_RANGE);
+        assertEquals(7L, moveResult(year3000State).getLong(ITEM_ID));
+        assertRejectedBy("year 1499", year1499State, DATE_OUT_OF_RANGE);
+        assertEquals(7L, moveResult(year1499State).getLong(ITEM_ID));
+        verify(translationService, times(2)).translate(TRANSLATION_PATH + ".move.error." + DATE_OUT_OF_RANGE,
+                MOVE_ERROR_FALLBACK_PREFIX + DATE_OUT_OF_RANGE, Locale.ENGLISH, "1500", "2500");
+        assertRejectedBy("year 3000 with context beyond bounds", outOfBoundsContextState, INVALID_REQUEST);
+        verify(resolver, never()).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+        verifyNotMutated(item);
+
+        // when
+        GanttChartComponentState year1500State = createState(true, HEADER_DATE_FROM, HEADER_DATE_TO);
+        move(year1500State, payload(MOVED_ITEM_ID, TARGET_ROW, "1500-01-01 00:00:00"));
+
+        // then
+        assertNotNull(year1500State.getMoveRequest());
+        assertEquals(new DateTime(1500, 1, 1, 0, 0, DateTimeZone.UTC).getMillis(), year1500State.getMoveRequest()
+                .getDateFrom().getTime());
+    }
+
+    /**
+     * A drop of the one-hour item {@code O-1} at 2500-12-31 23:30:00 ends at 2501-01-01 00:30:00 and is rejected as out of
+     * the date range, with the translation arguments 1500 and 2500, after the resolver runs, carrying the item id, without
+     * a move request and without changing the item. A drop at 2500-12-31 22:30:00 ends at 23:30:00 of the same day and
+     * builds a move request with those dates.
+     */
+    @Test
+    public final void shouldRejectDropWhoseEndCrossesUpperYearBound() throws Exception {
+        // given
+        GanttChartModifiableItem crossingItem = mockModifiableItem(MOVED_ITEM_ID, ORIGINAL_DATE_FROM, ORIGINAL_DATE_TO);
+        GanttChartModifiableItem lastDayItem = mockModifiableItem(MOVED_ITEM_ID, ORIGINAL_DATE_FROM, ORIGINAL_DATE_TO);
+
+        // when
+        stubResolverWith(boardWithOriginRowItem(crossingItem));
+        GanttChartComponentState crossingState = createState(true, HEADER_DATE_FROM, HEADER_DATE_TO);
+        move(crossingState, payload(MOVED_ITEM_ID, TARGET_ROW, "2500-12-31 23:30:00"));
+
+        stubResolverWith(boardWithOriginRowItem(lastDayItem));
+        GanttChartComponentState lastDayState = createState(true, HEADER_DATE_FROM, HEADER_DATE_TO);
+        move(lastDayState, payload(MOVED_ITEM_ID, TARGET_ROW, "2500-12-31 22:30:00"));
+
+        // then
+        assertRejectedBy("end in 2501", crossingState, DATE_OUT_OF_RANGE);
+        assertEquals(7L, moveResult(crossingState).getLong(ITEM_ID));
+        verify(translationService, times(1)).translate(TRANSLATION_PATH + ".move.error." + DATE_OUT_OF_RANGE,
+                MOVE_ERROR_FALLBACK_PREFIX + DATE_OUT_OF_RANGE, Locale.ENGLISH, "1500", "2500");
+        verifyNotMutated(crossingItem);
+        verify(resolver, times(2)).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+
+        GanttChartMoveRequest lastDayMove = lastDayState.getMoveRequest();
+        assertNotNull(lastDayMove);
+        assertEquals(new DateTime(2500, 12, 31, 22, 30, DateTimeZone.UTC).getMillis(), lastDayMove.getDateFrom().getTime());
+        assertEquals(new DateTime(2500, 12, 31, 23, 30, DateTimeZone.UTC).getMillis(), lastDayMove.getDateTo().getTime());
+        verify(lastDayItem).setDateTo("2500-12-31 23:30:00");
+    }
+
+    /**
+     * Each of the five qcadooView bundles, read as UTF-8, defines {@code qcadooView.gantt.move.error.dateOutOfRange} with the
+     * placeholders {0} and {1} once each, and formatting it with {@link MessageFormat} and the arguments 1500 and 2500 gives
+     * a text holding both years and no placeholder.
+     */
+    @Test
+    public final void shouldDefineDateOutOfRangeMessageWithBothYearBoundsInEveryBundle() throws Exception {
+        // given
+        String key = MOVE_ERROR_FALLBACK_PREFIX + DATE_OUT_OF_RANGE;
+        String[] localeSuffixes = { "en", "pl", "de", "fr", "cn" };
+        Map<String, String> patternByBundle = new LinkedHashMap<String, String>();
+
+        // when
+        for (String localeSuffix : localeSuffixes) {
+            String resource = "qcadooView/locales/qcadooView_" + localeSuffix + ".properties";
+            InputStream in = getClass().getClassLoader().getResourceAsStream(resource);
+            assertNotNull(resource, in);
+            Properties bundle = new Properties();
+            try {
+                bundle.load(new InputStreamReader(in, "UTF-8"));
+            } finally {
+                in.close();
+            }
+            patternByBundle.put(resource, bundle.getProperty(key));
+        }
+
+        // then
+        assertEquals(5, patternByBundle.size());
+        for (Map.Entry<String, String> bundlePattern : patternByBundle.entrySet()) {
+            String pattern = bundlePattern.getValue();
+            assertNotNull(bundlePattern.getKey(), pattern);
+            assertEquals(bundlePattern.getKey(), 1, StringUtils.countMatches(pattern, "{0}"));
+            assertEquals(bundlePattern.getKey(), 1, StringUtils.countMatches(pattern, "{1}"));
+            String message = MessageFormat.format(pattern, "1500", "2500");
+            assertTrue(bundlePattern.getKey(), message.contains("1500") && message.contains("2500"));
+            assertFalse(bundlePattern.getKey(), message.contains("{") || message.contains("'"));
+        }
+    }
+
 
     /**
      * In {@code Europe/Warsaw}, 02:30 on the spring-forward day does not exist, and its drop is rejected as a nonexistent time
@@ -1485,7 +1872,9 @@ public class GanttChartComponentStateMoveItemTest {
 
     /**
      * The resolver called by moveItem receives a scale that reads and writes the component's scale: it reports the header
-     * range and an unset dates flag, and the dates flag and range it sets are what the resolver sees on the next refresh.
+     * range, midnight of 2026-06-01 to 23:59:59 of 2026-06-02, and an unset dates flag. On the next refresh the resolver sees
+     * the dates flag it set, and the range it set, noon of 2026-05-31 to noon of 2026-06-03, with each end at midnight of
+     * its day: midnight of 2026-05-31 to midnight of 2026-06-03.
      */
     @Test
     public final void shouldHandResolverScaleThatDelegatesToComponentScale() throws Exception {
@@ -1698,10 +2087,10 @@ public class GanttChartComponentStateMoveItemTest {
     }
 
     /**
-     * An item id given as a JSON string, a number with a fraction or an exponent, an integer outside the {@code long} range,
-     * a boolean, an object, or in hexadecimal, leading-zero or plus-signed form makes the payload an invalid request with a
-     * null item id, before the resolver runs; the {@code long} bounds themselves reach the resolver and are rejected there
-     * as not movable.
+     * An item id given as a JSON string, a number with a fraction, an exponent or both, an integer outside the {@code long}
+     * range, a boolean, an object, an array, or in hexadecimal, leading-zero or plus-signed form makes the payload an
+     * invalid request with a null item id, before the resolver runs; the {@code long} bounds themselves reach the resolver
+     * and are rejected there as not movable.
      */
     @Test
     public final void shouldRejectItemIdThatIsNotJsonIntegerInLongRange() throws Exception {
@@ -1734,6 +2123,213 @@ public class GanttChartComponentStateMoveItemTest {
         assertRejectedBy("long minimum", minIdState, ITEM_NOT_MOVABLE);
         assertEquals(Long.MIN_VALUE, moveResult(minIdState).getLong(ITEM_ID));
         verify(resolver, times(2)).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+    }
+
+    /**
+     * A payload of 16384 characters, the strict drop of {@code O-1} followed by spaces, builds a move request. The same
+     * payload with one more space, 16385 characters, is an invalid request with a null item id, and only the first payload
+     * reaches the resolver.
+     */
+    @Test
+    public final void shouldRejectPayloadLongerThanMaximumLength() throws Exception {
+        // given
+        String longestPayload = VALID_PAYLOAD_TEXT
+                + StringUtils.repeat(' ', MOVE_PAYLOAD_MAX_LENGTH - VALID_PAYLOAD_TEXT.length());
+        String tooLongPayload = longestPayload + " ";
+        GanttChartComponentState longestState = createDefaultState();
+        GanttChartComponentState tooLongState = createDefaultState();
+
+        // when
+        move(tooLongState, tooLongPayload);
+        move(longestState, longestPayload);
+
+        // then
+        assertEquals(16384, longestPayload.length());
+        assertEquals(16385, tooLongPayload.length());
+        assertRejectedBy("payload of 16385 characters", tooLongState, INVALID_REQUEST);
+        assertTrue(moveResult(tooLongState).isNull(ITEM_ID));
+        assertNotNull(longestState.getMoveRequest());
+        assertEquals(TARGET_ROW, longestState.getMoveRequest().getTargetRowName());
+        verify(resolver, times(1)).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+    }
+
+    /**
+     * An {@code originalName} of 4096 characters after unescaping, 4000 letters followed by 96 JSON unicode escapes of
+     * U+00E9, reaches the move request unescaped. The same name with one more letter, 4097 characters, and a {@code row} of
+     * 4097 letters are each an invalid request with a null item id, before the resolver runs.
+     */
+    @Test
+    public final void shouldRejectPayloadStringLongerThanMaximumTextLength() throws Exception {
+        // given
+        GanttChartModifiableItem item = mockModifiableItem(MOVED_ITEM_ID, ORIGINAL_DATE_FROM, ORIGINAL_DATE_TO);
+        stubResolverWith(boardWithOriginRowItem(item));
+
+        String escapedAccents = StringUtils.repeat("\\u00e9", 96);
+        String longestName = StringUtils.repeat('a', 4000) + StringUtils.repeat('\u00e9', 96);
+        String longestNamePayload = validPayloadTextWith("\"O-1\"", "\"" + StringUtils.repeat('a', 4000) + escapedAccents
+                + "\"");
+
+        Map<String, String> payloadByCase = new LinkedHashMap<String, String>();
+        payloadByCase.put("originalName of 4097 characters", validPayloadTextWith("\"O-1\"", "\""
+                + StringUtils.repeat('a', 4001) + escapedAccents + "\""));
+        payloadByCase.put("row of 4097 characters", validPayloadTextWith("\"L2\"", "\"" + StringUtils.repeat('a', 4097)
+                + "\""));
+
+        // when
+        Map<String, GanttChartComponentState> stateByCase = moveEachOnFreshState(payloadByCase);
+        GanttChartComponentState longestNameState = createState(true, HEADER_DATE_FROM, HEADER_DATE_TO);
+        move(longestNameState, longestNamePayload);
+
+        // then
+        assertInvalidRequestForEach(stateByCase, null);
+        assertEquals(4096, longestName.length());
+        assertNotNull(longestNameState.getMoveRequest());
+        assertEquals(longestName, longestNameState.getMoveRequest().getOriginalName());
+        verify(resolver, times(1)).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+    }
+
+    /**
+     * A member outside the seven payload keys makes the payload an invalid request with a null item id, before the resolver
+     * runs: {@code "extra":1} after the last key or before the first, {@code "extra":null}, {@code "extra":"x"} and
+     * {@code "extra":{}}.
+     */
+    @Test
+    public final void shouldRejectPayloadWithUnexpectedMember() throws Exception {
+        // given
+        GanttChartModifiableItem item = mockModifiableItem(MOVED_ITEM_ID, ORIGINAL_DATE_FROM, ORIGINAL_DATE_TO);
+        stubResolverWith(boardWithOriginRowItem(item));
+
+        Map<String, String> payloadByCase = new LinkedHashMap<String, String>();
+        payloadByCase.put("integer after the last key", validPayloadTextWith("10:00:00\"}", "10:00:00\",\"extra\":1}"));
+        payloadByCase.put("integer before the first key", validPayloadTextWith("{\"itemId\"", "{\"extra\":1,\"itemId\""));
+        payloadByCase.put("null", validPayloadTextWith("10:00:00\"}", "10:00:00\",\"extra\":null}"));
+        payloadByCase.put("string", validPayloadTextWith("10:00:00\"}", "10:00:00\",\"extra\":\"x\"}"));
+        payloadByCase.put("empty object", validPayloadTextWith("10:00:00\"}", "10:00:00\",\"extra\":{}}"));
+
+        // when
+        Map<String, GanttChartComponentState> stateByCase = moveEachOnFreshState(payloadByCase);
+
+        // then
+        assertInvalidRequestForEach(stateByCase, null);
+        verify(resolver, never()).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+        verifyNotMutated(item);
+    }
+
+    /**
+     * Arrays nested 8000 levels deep and objects nested 2500 levels deep, given as the value of {@code originalName} or of
+     * an unexpected member {@code extra} in payloads of at most 16384 characters, and arrays or objects nested 10000 levels
+     * deep given the same way in payloads longer than 16384 characters, each make the payload an invalid request with a
+     * null item id, before the resolver runs.
+     */
+    @Test
+    public final void shouldRejectDeeplyNestedPayloadValue() throws Exception {
+        // given
+        GanttChartModifiableItem item = mockModifiableItem(MOVED_ITEM_ID, ORIGINAL_DATE_FROM, ORIGINAL_DATE_TO);
+        stubResolverWith(boardWithOriginRowItem(item));
+
+        Map<String, String> boundedPayloadByCase = nestedValuePayloads(nestedArrays(8000), nestedObjects(2500));
+        Map<String, String> unboundedPayloadByCase = nestedValuePayloads(nestedArrays(10000), nestedObjects(10000));
+
+        // when
+        Map<String, GanttChartComponentState> boundedStateByCase = moveEachOnFreshState(boundedPayloadByCase);
+        Map<String, GanttChartComponentState> unboundedStateByCase = moveEachOnFreshState(unboundedPayloadByCase);
+
+        // then
+        for (Map.Entry<String, String> payloadCase : boundedPayloadByCase.entrySet()) {
+            assertTrue(payloadCase.getKey(), payloadCase.getValue().length() <= MOVE_PAYLOAD_MAX_LENGTH);
+        }
+        for (Map.Entry<String, String> payloadCase : unboundedPayloadByCase.entrySet()) {
+            assertTrue(payloadCase.getKey(), payloadCase.getValue().length() > MOVE_PAYLOAD_MAX_LENGTH);
+        }
+        assertInvalidRequestForEach(boundedStateByCase, null);
+        assertInvalidRequestForEach(unboundedStateByCase, null);
+        verify(resolver, never()).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+        verifyNotMutated(item);
+    }
+
+    /**
+     * Builds four payloads by case name: the given nested arrays and nested objects, each as the value of
+     * {@code originalName} and as the value of a member {@code extra} placed before {@code itemId}.
+     */
+    private Map<String, String> nestedValuePayloads(final String arrays, final String objects) {
+        Map<String, String> payloadByCase = new LinkedHashMap<String, String>();
+        payloadByCase.put("originalName of nested arrays", validPayloadTextWith("\"O-1\"", arrays));
+        payloadByCase.put("originalName of nested objects", validPayloadTextWith("\"O-1\"", objects));
+        payloadByCase.put("extra of nested arrays", validPayloadTextWith("{\"itemId\"", "{\"extra\":" + arrays
+                + ",\"itemId\""));
+        payloadByCase.put("extra of nested objects", validPayloadTextWith("{\"itemId\"", "{\"extra\":" + objects
+                + ",\"itemId\""));
+        return payloadByCase;
+    }
+
+    /** Returns JSON arrays nested to the given depth, the innermost one empty. */
+    private String nestedArrays(final int depth) {
+        return StringUtils.repeat('[', depth) + StringUtils.repeat(']', depth);
+    }
+
+    /** Returns JSON objects nested to the given depth, each with the single member {@code a}, the innermost value being 1. */
+    private String nestedObjects(final int depth) {
+        return StringUtils.repeat("{\"a\":", depth) + "1" + StringUtils.repeat('}', depth);
+    }
+
+    /**
+     * An {@code itemId} of 5000 digits, an {@code itemId} of 21 digits and a {@code row} given as an integer of 5000 digits
+     * each make the payload an invalid request with a null item id, before the resolver runs.
+     */
+    @Test
+    public final void shouldRejectPayloadIntegerLongerThanMaximumLength() throws Exception {
+        // given
+        GanttChartModifiableItem item = mockModifiableItem(MOVED_ITEM_ID, ORIGINAL_DATE_FROM, ORIGINAL_DATE_TO);
+        stubResolverWith(boardWithOriginRowItem(item));
+
+        Map<String, String> payloadByCase = new LinkedHashMap<String, String>();
+        payloadByCase.put("itemId of 5000 digits", validPayloadTextWith("\"itemId\":7", "\"itemId\":"
+                + StringUtils.repeat('7', 5000)));
+        payloadByCase.put("itemId of 21 digits", validPayloadTextWith("\"itemId\":7", "\"itemId\":"
+                + StringUtils.repeat('7', 21)));
+        payloadByCase.put("row of 5000 digits", validPayloadTextWith("\"L2\"", StringUtils.repeat('1', 5000)));
+
+        // when
+        Map<String, GanttChartComponentState> stateByCase = moveEachOnFreshState(payloadByCase);
+
+        // then
+        assertInvalidRequestForEach(stateByCase, null);
+        verify(resolver, never()).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+        verifyNotMutated(item);
+    }
+
+    /**
+     * The parser factory of the moveItem payload does not canonicalize field names. Its parsers give as the text length of
+     * a JSON string the number of its characters after unescaping, 4 for the escapes of {@code A}, a line feed and U+00E9
+     * followed by {@code x}, and as the text length of a JSON integer the number of characters of its text: 20 for
+     * {@code -9223372036854775808}, 19 for {@code 9223372036854775807} and 5000 for an integer of 5000 digits.
+     */
+    @Test
+    public final void shouldMeasureStringAfterUnescapingAndIntegerWithSignInMovePayloadParser() throws Exception {
+        // given
+        JsonFactory factory = (JsonFactory) getField(createDefaultState(), "MOVE_PAYLOAD_JSON_FACTORY");
+        String text = "[\"\\u0041\\n\\u00e9x\",-9223372036854775808,9223372036854775807," + StringUtils.repeat('9', 5000)
+                + "]";
+        List<JsonToken> tokens = new ArrayList<JsonToken>();
+        List<Integer> textLengths = new ArrayList<Integer>();
+
+        // when
+        JsonParser parser = factory.createJsonParser(text);
+        try {
+            assertEquals(JsonToken.START_ARRAY, parser.nextToken());
+            for (JsonToken token = parser.nextToken(); token != JsonToken.END_ARRAY; token = parser.nextToken()) {
+                tokens.add(token);
+                textLengths.add(Integer.valueOf(parser.getTextLength()));
+            }
+        } finally {
+            parser.close();
+        }
+
+        // then
+        assertFalse(factory.isEnabled(JsonParser.Feature.CANONICALIZE_FIELD_NAMES));
+        assertEquals(Arrays.asList(JsonToken.VALUE_STRING, JsonToken.VALUE_NUMBER_INT, JsonToken.VALUE_NUMBER_INT,
+                JsonToken.VALUE_NUMBER_INT), tokens);
+        assertEquals(Arrays.asList(4, 20, 19, 5000), textLengths);
     }
 
     /**
@@ -1967,6 +2563,7 @@ public class GanttChartComponentStateMoveItemTest {
         GanttChartComponentState itemNotMovableState = createDefaultState();
         GanttChartComponentState targetRowUnknownState = createDefaultState();
         GanttChartComponentState offGridState = createDefaultState();
+        GanttChartComponentState dateOutOfRangeState = createDefaultState();
         GanttChartComponentState validThenOffGridState = createDefaultState();
         GanttChartComponentState validState = createDefaultState();
 
@@ -1976,6 +2573,7 @@ public class GanttChartComponentStateMoveItemTest {
         move(itemNotMovableState, payload(UNKNOWN_ITEM_ID, TARGET_ROW, DROP_DATE_FROM));
         move(targetRowUnknownState, payload(MOVED_ITEM_ID, UNKNOWN_ROW, DROP_DATE_FROM));
         move(offGridState, payload(MOVED_ITEM_ID, TARGET_ROW, "2026-06-01 10:07:00"));
+        move(dateOutOfRangeState, payload(MOVED_ITEM_ID, TARGET_ROW, "3000-01-01 10:30:00"));
         move(validThenOffGridState, validPayload());
         GanttChartMoveRequest firstMoveRequest = validThenOffGridState.getMoveRequest();
         move(validThenOffGridState, payload(MOVED_ITEM_ID, TARGET_ROW, "2026-06-01 10:07:00"));
@@ -1993,6 +2591,7 @@ public class GanttChartComponentStateMoveItemTest {
         assertRejectedBy(itemNotMovableState, ITEM_NOT_MOVABLE);
         assertRejectedBy(targetRowUnknownState, TARGET_ROW_UNKNOWN);
         assertRejectedBy(offGridState, OFF_GRID);
+        assertRejectedBy(dateOutOfRangeState, DATE_OUT_OF_RANGE);
         assertNotNull(firstMoveRequest);
         assertRejectedBy("valid then off grid", validThenOffGridState, OFF_GRID);
         assertRejectedBy(nonexistentTimeState, NONEXISTENT_TIME);

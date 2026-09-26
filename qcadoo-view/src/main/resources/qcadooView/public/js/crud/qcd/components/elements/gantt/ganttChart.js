@@ -283,7 +283,6 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         CLICK_SUPPRESSION_MS: 1000
     };
 
-    // Key codes of the keys that select and move draggable items.
     var keyCodes = {
         ENTER: 13,
         ESCAPE: 27,
@@ -501,8 +500,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     }
 
     /**
-     * Points the pending move, if any, at the rendered element of its item, or at an empty set when the chart shows no
-     * such item, and takes that element's current left and top as the position the move restores.
+     * Points the pending move, if any, at the rendered element of its item and stores that element's current left and
+     * top as preDragLeft and preDragTop, the position the move restores. When the chart shows no such item, the element
+     * is an empty set and preDragLeft and preDragTop become undefined.
      */
     function rebindPendingMove() {
         if (!pendingMove) {
@@ -519,7 +519,8 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
      * moveResult with accepted true and applySettings has rendered the value as the board, the move.acceptedAnnouncement
      * translation, or an empty text when it is missing, replaces the content of the status live region, and the focus
      * moves to the rebuilt element of the item that a keyboard move sent, when that element exists and has a tabindex.
-     * Every value with a moveResult clears the item to focus; a value without one changes nothing.
+     * Every value passed to this function with a moveResult clears the item to focus; a value passed without one changes
+     * nothing.
      *
      * @param value component value passed to setComponentValue
      */
@@ -1028,12 +1029,6 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         return decoder.value;
     }
 
-    /**
-     * Converts a value to a string.
-     *
-     * @param value value to convert
-     * @returns the value as a string, or an empty string for null and undefined
-     */
     function toText(value) {
         return value === null || value === undefined ? "" : String(value);
     }
@@ -1114,12 +1109,6 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }
     }
 
-    /**
-     * Returns whether a key code is the code of an arrow key.
-     *
-     * @param keyCode key code
-     * @returns true for Left, Up, Right and Down
-     */
     function isArrowKey(keyCode) {
         return keyCode === keyCodes.LEFT || keyCode === keyCodes.UP || keyCode === keyCodes.RIGHT
             || keyCode === keyCodes.DOWN;
@@ -1271,12 +1260,15 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     }
 
     /**
-     * Starts a pending press of a draggable item with the primary button: captures the pointer on the item and records the
-     * item's position, row, dates and the pointer start. Every pointerdown first discards a press or drag whose item is
-     * no longer in the document and then cancels a keyboard move with cancelKeyboardMove. A primary-button pointerdown
-     * with valid pointer input on the item of the click suppression ends that suppression. Ignored for any other button,
-     * for a pointerdown without an integral pointer id and finite coordinates, while a press, drag or move request is in
-     * progress, and when the item cannot capture the pointer.
+     * Starts a pending press of a draggable item with the primary button: captures the pointer on the item with the
+     * item's setPointerCapture and records the item's position, row, dates and the pointer start. Every pointerdown first
+     * discards a press or drag whose item is no longer in the document and then cancels a keyboard move with
+     * cancelKeyboardMove. A primary-button pointerdown with valid pointer input on the item of the click suppression ends
+     * that suppression. Ignored for any other button, for a pointerdown without an integral pointer id and finite
+     * coordinates, and while a press, drag or move request is in progress. Any other pointerdown has its default action
+     * prevented and is ignored, with a QCD.debug message, when the item has no setPointerCapture method, when
+     * setPointerCapture throws, or when the item has hasPointerCapture and it reports afterwards that the item does not
+     * hold the pointer.
      *
      * @param eventObj pointerdown event
      * @param item pressed Gantt item
@@ -1298,17 +1290,20 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             return;
         }
         eventObj.preventDefault();
-        if (itemElement[0].setPointerCapture) {
-            try {
-                itemElement[0].setPointerCapture(oe.pointerId);
-            } catch (captureError) {
-                QCD.debug("Gantt item press ignored: pointer " + oe.pointerId + " cannot be captured: " + captureError);
-                return;
-            }
-            if (itemElement[0].hasPointerCapture && !itemElement[0].hasPointerCapture(oe.pointerId)) {
-                QCD.debug("Gantt item press ignored: pointer " + oe.pointerId + " is not captured by the item");
-                return;
-            }
+        if (typeof itemElement[0].setPointerCapture !== "function") {
+            QCD.debug("Gantt item press ignored: pointer " + oe.pointerId
+                + " cannot be captured: the item has no setPointerCapture method");
+            return;
+        }
+        try {
+            itemElement[0].setPointerCapture(oe.pointerId);
+        } catch (captureError) {
+            QCD.debug("Gantt item press ignored: pointer " + oe.pointerId + " cannot be captured: " + captureError);
+            return;
+        }
+        if (itemElement[0].hasPointerCapture && !itemElement[0].hasPointerCapture(oe.pointerId)) {
+            QCD.debug("Gantt item press ignored: pointer " + oe.pointerId + " is not captured by the item");
+            return;
         }
         dragState = {
             phase: "pending",
@@ -1453,7 +1448,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     /**
      * Sends the target of the current drag or keyboard move: empties the status live region, blocks the chart, records
      * the pending move and the item to focus after an accepted answer, clears the drag state and sends the moveItem event
-     * with the arguments of GanttChartMoveTransform.buildMoveArgs.
+     * with the arguments of GanttChartMoveTransform.buildMoveArgs through callMoveEvent. When callMoveEvent returns the
+     * jQuery request of the event, onMoveComplete is also registered with its fail method, so it runs as well when jQuery
+     * rejects that request.
      *
      * @param focusItemId id of the item that receives the focus once the board is rebuilt from an accepted answer, or null
      *                    to leave the focus unchanged
@@ -1470,12 +1467,65 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         focusAfterMoveItemId = focusItemId;
         var args = moveTransform.buildMoveArgs(dragState.item, dragState.targetRow, dragState.targetDate);
         dragState = null;
-        mainController.callEvent("moveItem", _this.elementPath, onMoveComplete, args);
+        var moveRequest = callMoveEvent(args);
+        if (moveRequest !== null) {
+            moveRequest.fail(onMoveComplete);
+        }
     }
 
     /**
-     * Runs when the moveItem request completes. After the current call stack, restores the dropped item and unblocks the
-     * chart when no moveResult has been handled for the move.
+     * Calls mainController.callEvent with the moveItem event, the chart's element path, onMoveComplete and the given
+     * arguments. While the call runs, a handler of the ajaxSend event bound on the document keeps the jqXHR of the first
+     * request whose data isMoveRequestData accepts for these arguments; the handler is unbound when the call returns or
+     * throws.
+     *
+     * @param args moveItem arguments of GanttChartMoveTransform.buildMoveArgs
+     * @returns the jqXHR of the moveItem request sent during the call, or null when no such request was sent
+     */
+    function callMoveEvent(args) {
+        var moveRequest = null;
+        var captureMoveRequest = function (event, jqXHR, settings) {
+            if (moveRequest === null && settings && isMoveRequestData(settings.data, args)) {
+                moveRequest = jqXHR;
+            }
+        };
+        $(document).bind("ajaxSend", captureMoveRequest);
+        try {
+            mainController.callEvent("moveItem", _this.elementPath, onMoveComplete, args);
+        } finally {
+            $(document).unbind("ajaxSend", captureMoveRequest);
+        }
+        return moveRequest;
+    }
+
+    /**
+     * Returns whether the data of a jQuery request is the JSON text of a moveItem event sent with the given arguments.
+     *
+     * @param data data of the request
+     * @param args moveItem arguments of GanttChartMoveTransform.buildMoveArgs
+     * @returns true when data is a string that parses as JSON to an object whose event has the name "moveItem" and an
+     *          args array whose first element is identical to the first element of args; false otherwise, including
+     *          for data that is not valid JSON
+     */
+    function isMoveRequestData(data, args) {
+        var parameters;
+        if (typeof data !== "string") {
+            return false;
+        }
+        try {
+            parameters = JSON.parse(data);
+        } catch (parseError) {
+            return false;
+        }
+        return parameters !== null && typeof parameters === "object" && parameters.event !== null
+            && typeof parameters.event === "object" && parameters.event.name === "moveItem"
+            && $.isArray(parameters.event.args) && parameters.event.args[0] === args[0];
+    }
+
+    /**
+     * Runs when the moveItem request completes or jQuery rejects it; one request can do both. After the current call
+     * stack, restores the item of the pending move and unblocks the chart when a move is still pending, that is when no
+     * moveResult has been handled for it; without a pending move it changes nothing.
      */
     function onMoveComplete() {
         setTimeout(function () {
@@ -1515,7 +1565,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     }
 
     /**
-     * Returns an item to its position before the drag and removes the ganttItemDragging class.
+     * Sets the left and top of the state's element to the preDragLeft and preDragTop stored in the state, leaving a
+     * coordinate whose stored value is undefined unchanged, and removes the ganttItemDragging class. For a pending move,
+     * rebindPendingMove may have replaced the stored values with the coordinates of a re-rendered element.
      *
      * @param state drag state or pending move holding element, preDragLeft and preDragTop
      */
@@ -1591,12 +1643,6 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         return dragState !== null && oe.pointerId === dragState.pointerId;
     }
 
-    /**
-     * Returns whether a value is a finite number.
-     *
-     * @param value value to check
-     * @returns true when the value is of type number and neither NaN nor infinite
-     */
     function isFiniteNumber(value) {
         return typeof value === "number" && isFinite(value);
     }
@@ -1844,8 +1890,13 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
     };
 
     /**
-     * Calculates the viewport position of the tooltip for a pointer position: centred below the pointer, kept inside the
-     * window horizontally and placed above the pointer when it would reach the bottom of the window.
+     * Calculates the viewport position of the tooltip for a pointer position. The tooltip is centred horizontally on the
+     * pointer with its top 20 px below it. When its left edge would lie left of 20 px, it starts at 20 px; otherwise, when
+     * its right edge would lie right of the window width less 40 px, it is moved left to end there. When its bottom would
+     * lie below the window height less 20 px, it is placed with its bottom 20 px above the pointer. A tooltip wider than
+     * the window width less 60 px cannot keep both horizontal margins: it either starts at 20 px and ends right of the
+     * 40 px margin or ends at that margin and starts left of 20 px, and a wide enough one extends past that side of the
+     * window. A tooltip placed above the pointer can extend past the top of the window.
      *
      * @param x horizontal viewport position of the pointer
      * @param y vertical viewport position of the pointer

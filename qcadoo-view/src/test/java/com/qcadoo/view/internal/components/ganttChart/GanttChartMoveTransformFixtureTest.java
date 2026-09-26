@@ -70,8 +70,9 @@ import com.qcadoo.view.internal.components.ganttChart.GanttChartScaleImpl.ZoomLe
  * {@code OFF_GRID_TARGET} lies off the move grid, and the {@code H1} and {@code D1} fixtures in {@code Europe/Warsaw} cover both
  * the spring-forward gap at {@code NONEXISTENT_WALL_CLOCK} and the fall-back overlap at {@code REPEATED_WALL_CLOCK}.
  * <p>
- * Each test switches the JVM and Joda-Time default zones to the fixture's zone; {@link #init()} starts every test in UTC and
- * {@link #restore()} restores the zones found before the test.
+ * {@link #init()} starts every test with the JVM and Joda-Time default zones set to UTC. The tests that create a scale
+ * switch both default zones to each fixture's zone before creating that fixture's scale, and {@link #restore()} restores the
+ * zones found before the test.
  */
 public class GanttChartMoveTransformFixtureTest {
 

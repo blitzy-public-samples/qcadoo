@@ -166,7 +166,6 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
         json.put("allowItemMove", allowItemMove);
         json.put("moveGridMinutes", MOVE_GRID_MINUTES);
 
-        // Maps each ZoomLevel name to the number of hours one chart cell spans at that zoom level.
         JSONObject zoomHoursIntervals = new JSONObject();
         for (ZoomLevel zoomLevel : ZoomLevel.values()) {
             zoomHoursIntervals.put(zoomLevel.toString(), zoomLevel.getHoursInterval());
@@ -212,7 +211,12 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
         return stripOrientation;
     }
 
-    /** Returns whether Gantt items of this component may be moved with the moveItem event. */
+    /**
+     * Returns whether Gantt items of this component may be moved with the moveItem event.
+     *
+     * @return {@code true} when the view sets the {@code allowItemMove} option to {@code true} in any letter case, and
+     *         {@code false} when it sets the option to {@code false} in any letter case or does not set it
+     */
     public final boolean isAllowItemMove() {
         return allowItemMove;
     }

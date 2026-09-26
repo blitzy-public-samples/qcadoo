@@ -461,8 +461,10 @@ test('parseWallClock rejects malformed input and round-trips valid input', () =>
     assert.equal(T.toPixelDelta('2026-06-01 10:00:00', 'garbage', 1, CELL_WIDTH), 0);
 });
 
-// Asserts every year from 0000 to 0099, and sample later years, parse to their literal proleptic Gregorian date, format
-// back to the same text, and move by wall-clock grid steps without leaving the literal year.
+// Asserts every year from 0000 to 0099, and sample later years, parse to their literal proleptic Gregorian date and
+// format back to the same text; 0099, 0100 and 1999 lie in that order, with 1900 years from 0099 to 1999; drag steps
+// keep literal-year wall-clock arithmetic, including the crossing from 0099-12-31 to 0100-01-01 and back; and parsing,
+// drop dates and formatting give the same results under every tested process.env.TZ zone.
 test('wall-clock years 0000 to 0099 keep their literal year', () => {
     // Minutes of five 400-year Gregorian cycles, 2000 years of 146097 days per cycle.
     const twoThousandYearsMinutes = 5 * 146097 * 1440;

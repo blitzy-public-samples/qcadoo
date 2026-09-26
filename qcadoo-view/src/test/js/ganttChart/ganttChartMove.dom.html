@@ -32,8 +32,9 @@
     window.__loadBoard(name, overrides) renders the component.jsp and ganttChart.jsp markup of
     window.mainTab.gridLayout.gantt, the component path of the gantt component of the productionMaintenanceGantt view,
     and constructs QCD.components.elements.GanttChart the way pageConstructor.js does. window.mainController is a
-    recording stub that answers every event with canned values after a zero delay, except a moveItem with an
-    httpReply answer, which runs through the real event transport.
+    recording stub that answers every event with canned values after a zero delay, with two exceptions: a moveItem
+    with an httpReply answer runs through the real event transport, and a moveItem with a hold: true answer is
+    answered only after window.__releaseHeldMove().
 
     Page API:
       window.__loadBoard(name, overrides)  renders board `name`; overrides.options and overrides.board replace keys of the
@@ -66,7 +67,10 @@
                                                                              page components; an XMLHttpRequest
                                                                              stand-in answers it with that status and
                                                                              body and a JSON content type (hold does
-                                                                             not apply)
+                                                                             not apply); the answer is recorded once,
+                                                                             after the complete function the transport
+                                                                             calls, or after a zero delay when jQuery
+                                                                             rejects the request, whichever runs first
                                            null answers with the default response
       window.__httpRequests                requests sent for httpReply answers, each {method, url, async, body, headers}
       window.__headerButtonCalls           "block" and "unblock" calls of the window header of that page controller
@@ -256,7 +260,9 @@
             var MAINTENANCE_STRIP = {color: "#2E86C1", size: 100};
 
             // Component options of window.mainTab.gridLayout.gantt: the GanttChartComponentPattern.getJsOptions keys
-            // and the base component pattern keys.
+            // with a subset of its translations, and the base component pattern keys. The translations lack
+            // move.keyboardHelp, move.acceptedAnnouncement and move.cancelledAnnouncement, which
+            // ganttChartMove.dom.test.js adds through the A11Y_OVERRIDES options of window.__loadBoard.
             var BASE_OPTIONS = {
                 translations: {
                     "header.label": "Gantt",
@@ -308,9 +314,10 @@
                 return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
             }
 
-            // Freezes an object and every object it contains.
+            // Freezes an object and every object it contains, frozen or not, and returns it. The object graph must be
+            // acyclic.
             function deepFreeze(value) {
-                if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+                if (value !== null && typeof value === "object") {
                     Object.keys(value).forEach(function (key) {
                         deepFreeze(value[key]);
                     });
@@ -324,14 +331,17 @@
                 window.__pageErrors.push({message: message, source: FIXTURE_SOURCE, line: null, column: null});
             }
 
-            // Returns wall-clock minutes since 1970-01-01 00:00:00 of a "yyyy-MM-dd" or "yyyy-MM-dd HH:mm:ss" date.
+            // Returns wall-clock minutes since 1970-01-01 00:00:00 of a "yyyy-MM-dd" or "yyyy-MM-dd HH:mm:ss" date,
+            // with the four-digit year taken literally, 0000 to 0099 included.
             function wallClockMinutes(text) {
                 var match = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}):(\d{2}))?$/.exec(text);
                 if (!match) {
                     throw new Error("Not a wall-clock date: " + text);
                 }
-                return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4] || 0),
-                    Number(match[5] || 0), Number(match[6] || 0)) / 60000;
+                var date = new Date(0);
+                date.setUTCFullYear(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+                date.setUTCHours(Number(match[4] || 0), Number(match[5] || 0), Number(match[6] || 0), 0);
+                return date.getTime() / 60000;
             }
 
             // Returns the "yyyy-MM-dd" date of wall-clock minutes.
@@ -346,7 +356,7 @@
             }
 
             // Returns the chart cell position of a date: wall-clock hours since the scale start divided by the hours
-            // interval, truncated to 0.1 cell.
+            // interval, rounded down to a multiple of 0.1 cell; positions are not clamped to the scale range.
             function cellPosition(date, hoursInterval, scaleStart) {
                 var minutes = wallClockMinutes(date) - wallClockMinutes(scaleStart);
                 return Math.floor(minutes * 10 / (hoursInterval * 60)) / 10;
@@ -371,7 +381,7 @@
             }
 
             // Builds a collision item over the given items in the GanttChartConflictItem JSON shape, spanning the
-            // bounds of the covering item.
+            // bounds of the supplied bounds item.
             function collision(row, bounds, items) {
                 return {
                     row: row,
@@ -661,7 +671,7 @@
             function readMoveItemId(args) {
                 try {
                     var payload = JSON.parse(args[0]);
-                    if (payload !== null && typeof payload === "object") {
+                    if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
                         return payload.itemId === undefined ? null : payload.itemId;
                     }
                 } catch (e) {
@@ -751,9 +761,10 @@
             // Page controller that sends the moveItem events of httpReply answers, or null until the first of them.
             var transportController = null;
 
-            // Returns the page controller of httpReply answers. On first use it is created without running its
-            // constructor, so it has no page components, and it gets a window header that records its blockButtons and
-            // unblockButtons calls in window.__headerButtonCalls.
+            // Returns the page controller of httpReply answers. On first use it is created with
+            // new QCD.PageController(), and its this.constructor initializer, which crudView.jsp calls with viewName,
+            // pluginIdentifier, hasDataDefinition and popup, is not called; it has no page components and gets a window
+            // header that records its blockButtons and unblockButtons calls in window.__headerButtonCalls.
             function getTransportController() {
                 if (transportController === null) {
                     transportController = new QCD.PageController();
@@ -822,14 +833,25 @@
             }
 
             // Sends a moveItem through QCD.PageController.callEvent, performEvent, QCDConnector.sendPost and
-            // jQuery.ajax of the transport page controller, with window.XMLHttpRequest replaced by the reply stand-in
-            // while the request is sent. The complete function the transport calls is dropped when a board is loaded
-            // before the reply is answered; otherwise it runs the complete function of the event and records the answer
-            // in window.__lastResponseApplied. A reply without a numeric status and a string body records a fixture
-            // error and is answered after a zero delay without a request.
+            // jQuery.ajax of the transport page controller. While the request is sent, window.XMLHttpRequest is the
+            // reply stand-in and a document ajaxSend handler keeps the jqXHR of the first request. The complete function
+            // the transport calls runs the complete function of the event and then records the answer; a request that
+            // jQuery rejects records the answer after a zero delay unless it is recorded by then, so each request
+            // records it in window.__lastResponseApplied once. Neither runs after a board is loaded. A reply without a
+            // numeric status and a string body records a fixture error and is answered after a zero delay without a
+            // request.
             function sendMoveOverHttp(completeFunction, args) {
                 var reply = window.__nextMoveResponse;
                 var callGeneration = generation;
+                var answerRecorded = false;
+                var recordAnswer = function () {
+                    if (answerRecorded || callGeneration !== generation || !window.__gantt) {
+                        return;
+                    }
+                    answerRecorded = true;
+                    window.__seq += 1;
+                    window.__lastResponseApplied = {eventName: "moveItem", seq: window.__seq};
+                };
                 var transportComplete = function () {
                     if (callGeneration !== generation || !window.__gantt) {
                         return;
@@ -839,8 +861,7 @@
                             completeFunction();
                         }
                     } finally {
-                        window.__seq += 1;
-                        window.__lastResponseApplied = {eventName: "moveItem", seq: window.__seq};
+                        recordAnswer();
                     }
                 };
                 if (typeof reply.status !== "number" || typeof reply.body !== "string") {
@@ -850,20 +871,34 @@
                 }
                 var eventTransport = getTransportController();
                 var nativeXhr = window.XMLHttpRequest;
+                var transportXhr = null;
+                var captureTransportXhr = function (event, jqXHR) {
+                    if (transportXhr === null) {
+                        transportXhr = jqXHR;
+                    }
+                };
                 QCDConnector.windowName = "/page/" + pluginIdentifier + "/" + viewName;
                 QCDConnector.mainController = window.mainController;
                 window.XMLHttpRequest = replyXhrClass({status: reply.status, body: reply.body});
+                $(document).bind("ajaxSend", captureTransportXhr);
                 try {
                     eventTransport.callEvent("moveItem", null, transportComplete, args);
                 } finally {
                     window.XMLHttpRequest = nativeXhr;
+                    $(document).unbind("ajaxSend", captureTransportXhr);
+                }
+                if (transportXhr !== null) {
+                    transportXhr.fail(function () {
+                        setTimeout(recordAnswer, 0);
+                    });
                 }
             }
 
             // Recording stub of QCD.PageController: callEvent and showMessage.
             window.mainController = {
-                // Records an event call, then answers it after a zero delay, or through the real event transport for an
-                // httpReply moveItem answer, and records the answer in window.__lastResponseApplied.
+                // Records an event call, then answers it through the real event transport for an httpReply moveItem
+                // answer, keeps the answer until window.__releaseHeldMove() for a hold: true moveItem answer, and
+                // otherwise answers it after a zero delay; each answer is recorded in window.__lastResponseApplied.
                 callEvent: function (eventName, component, completeFunction, args, actionsPerformer, type) {
                     window.__calls.push({
                         eventName: eventName,

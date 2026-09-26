@@ -25,14 +25,26 @@
 
 // node:test reporter for the GanttChartMoveTransform unit tests.
 //
-// It prints one line per test result and every diagnostic, measures the line coverage of the
-// QCD.components.elements.GanttChartMoveTransform object literal in gantt/ganttChart.js, and sets process.exitCode to 1
-// when any of these holds:
+// It measures the line coverage of the QCD.components.elements.GanttChartMoveTransform object literal in
+// gantt/ganttChart.js; lines outside the object literal are not counted. It prints:
+//   - one outcome line per test result, followed for a failed result by indented lines holding the error message, the
+//     cause message when it differs, and the stack frames of the error and of its cause;
+//   - one "# " line per diagnostic;
+//   - per coverage event, the "Coverage source:", line coverage and "Uncovered lines:" lines, up to the first failed
+//     coverage condition, which prints an "ERROR " line;
+//   - after the last event, one "ERROR " line each for skipped or todo tests, zero top-level test cases and no
+//     coverage event;
+//   - last, the line "pass N fail N skipped N todo N".
+// It sets process.exitCode to 1 when any of these holds:
 //   - a test fails, is skipped or is marked todo;
-//   - no top-level test case reported a result; a result named after its own test file reports the file, not a case;
-//   - no coverage event arrived, or the coverage entry, the declaration or the end of the object literal is missing;
+//   - no top-level test case reported a result; a result whose name resolves to its own file path is not a case;
+//   - no coverage event arrived;
+//   - no coverage entry path ends with gantt/ganttChart.js;
+//   - the source file of that coverage entry cannot be read;
+//   - no line of that source file starts with the object literal declaration;
+//   - the brace closing the object literal is missing;
+//   - no coverage lines are reported inside the object literal;
 //   - fewer than 90% of the reported lines inside the object literal ran at least once.
-// Lines outside the object literal are not counted. The last output line is "pass N fail N skipped N todo N".
 //
 // Usage, from the repository root:
 //   node --test --experimental-test-coverage --test-coverage-include='**/gantt/ganttChart.js' \
@@ -58,7 +70,7 @@ const REGEX_PRECEDING_CHARACTERS = '(,=:[!&|?{};+-*%<>~^';
 const REGEX_PRECEDING_KEYWORDS = ['return', 'typeof', 'case', 'delete', 'void', 'throw', 'new', 'in', 'instanceof', 'do',
     'else', 'yield', 'await'];
 
-// Output labels per test outcome; "file" is a passed result of a test file that reported no test case.
+// Output labels per test outcome; "file" is a passed result whose name resolves to its own file path.
 const OUTCOME_LABELS = { pass: 'PASS', fail: 'FAIL', skipped: 'SKIPPED', todo: 'TODO', file: 'FILE' };
 
 // Returns the 1-based number of the first line that starts, after indentation, with the declaration, or -1 when none does.
