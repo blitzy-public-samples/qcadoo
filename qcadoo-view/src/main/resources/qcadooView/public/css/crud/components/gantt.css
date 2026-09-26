@@ -293,3 +293,16 @@
 .ganttHeaderContainer .labelbox {
 	height: auto;	
 }
+
+.ganttItem.ganttItemDraggable {
+	touch-action: none;
+}
+.ganttItem.ganttItemDraggable.ganttItemSelected {
+	z-index: 220;
+}
+.ganttItem.ganttItemDragging {
+	z-index: 230;
+	filter: alpha(opacity=80);
+	opacity: 0.8;
+	-moz-opacity: 0.8;
+}
