@@ -30,12 +30,20 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyString;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Properties;
 
 import org.json.JSONObject;
 import org.junit.Before;
@@ -54,9 +62,11 @@ import com.qcadoo.view.internal.api.InternalViewDefinition;
 import com.qcadoo.view.internal.components.ganttChart.GanttChartScaleImpl.ZoomLevel;
 
 /**
- * Tests of the item-move options of {@link GanttChartComponentPattern}: parsing of the {@code allowItemMove} view option and
- * the {@code allowItemMove}, {@code moveGridMinutes}, {@code zoomHoursIntervals} and {@code move.rejectedHeader} entries of
- * the component's JavaScript options.
+ * Tests of the item-move options of {@link GanttChartComponentPattern}: parsing of the {@code allowItemMove} view option; the
+ * {@code allowItemMove}, {@code moveGridMinutes}, {@code zoomHoursIntervals} entries of the component's JavaScript options; its
+ * {@code move.rejectedHeader}, {@code move.keyboardHelp}, {@code move.acceptedAnnouncement} and
+ * {@code move.cancelledAnnouncement} translation entries; and the definition of the last three keys in every
+ * {@code qcadooView} locale bundle.
  */
 public class GanttChartComponentPatternTest {
 
@@ -71,6 +81,28 @@ public class GanttChartComponentPatternTest {
     private static final String FALLBACK_TRANSLATION_PREFIX = "qcadooView.gantt.";
 
     private static final String REJECTED_HEADER_KEY = "move.rejectedHeader";
+
+    private static final String KEYBOARD_HELP_KEY = "move.keyboardHelp";
+
+    private static final String ACCEPTED_ANNOUNCEMENT_KEY = "move.acceptedAnnouncement";
+
+    private static final String CANCELLED_ANNOUNCEMENT_KEY = "move.cancelledAnnouncement";
+
+    /** Translation keys, relative to the component's translation path, of the keyboard move help and move announcements. */
+    private static final String[] KEYBOARD_MOVE_AND_ANNOUNCEMENT_KEYS = { KEYBOARD_HELP_KEY, ACCEPTED_ANNOUNCEMENT_KEY,
+            CANCELLED_ANNOUNCEMENT_KEY };
+
+    /** Locale suffixes of the qcadooView locale bundles. */
+    private static final String[] BUNDLE_LOCALES = { "en", "pl", "de", "fr", "cn" };
+
+    private static final String BUNDLE_RESOURCE_PREFIX = "qcadooView/locales/qcadooView_";
+
+    private static final String BUNDLE_RESOURCE_SUFFIX = ".properties";
+
+    private static final String BUNDLE_ENCODING = "UTF-8";
+
+    /** Placeholder that the client replaces with the move grid step, in minutes. */
+    private static final String GRID_MINUTES_PLACEHOLDER = "{0}";
 
     @Mock
     private InternalViewDefinition viewDefinition;
@@ -134,6 +166,38 @@ public class GanttChartComponentPatternTest {
             rejection = e;
         }
         return rejection;
+    }
+
+    /**
+     * Reads the qcadooView locale bundle of the given locale suffix from the test classpath as UTF-8, failing the test when the
+     * bundle is missing.
+     */
+    private Properties loadBundle(final String localeSuffix) throws IOException {
+        String resource = BUNDLE_RESOURCE_PREFIX + localeSuffix + BUNDLE_RESOURCE_SUFFIX;
+        InputStream in = getClass().getClassLoader().getResourceAsStream(resource);
+        assertNotNull("Missing locale bundle " + resource, in);
+
+        Properties bundle = new Properties();
+        Reader reader = new InputStreamReader(in, BUNDLE_ENCODING);
+        try {
+            bundle.load(reader);
+        } finally {
+            reader.close();
+        }
+        return bundle;
+    }
+
+    /**
+     * Returns how many times the token occurs in the text, counting non-overlapping occurrences from the start.
+     */
+    private static int countOccurrences(final String text, final String token) {
+        int count = 0;
+        int index = text.indexOf(token);
+        while (index >= 0) {
+            count++;
+            index = text.indexOf(token, index + token.length());
+        }
+        return count;
     }
 
     @Test
@@ -274,6 +338,53 @@ public class GanttChartComponentPatternTest {
         assertTrue(jsOptions.getBoolean("hasPopupInfo"));
         assertTrue(jsOptions.getBoolean("allowDateSelection"));
         assertTrue(translations.has("header.label"));
+    }
+
+    @Test
+    public final void shouldExposeKeyboardMoveAndAnnouncementTranslations() throws Exception {
+        // given
+        GanttChartComponentPattern movablePattern = createPattern(new ComponentOption("allowItemMove", Collections
+                .singletonMap("value", "true")));
+        GanttChartComponentPattern defaultPattern = createPattern();
+
+        // when
+        JSONObject movableTranslations = movablePattern.getJsOptions(Locale.ENGLISH).getJSONObject("translations");
+        JSONObject defaultTranslations = defaultPattern.getJsOptions(Locale.ENGLISH).getJSONObject("translations");
+
+        // then
+        for (String key : KEYBOARD_MOVE_AND_ANNOUNCEMENT_KEYS) {
+            assertEquals(FALLBACK_TRANSLATION_PREFIX + key, movableTranslations.getString(key));
+            assertEquals(FALLBACK_TRANSLATION_PREFIX + key, defaultTranslations.getString(key));
+            verify(translationService, times(2)).translate(TRANSLATION_PATH + "." + key, FALLBACK_TRANSLATION_PREFIX + key,
+                    Locale.ENGLISH);
+        }
+    }
+
+    @Test
+    public final void shouldDefineKeyboardMoveAndAnnouncementTranslationsInEveryBundle() throws Exception {
+        // given
+        Map<String, Properties> bundles = new LinkedHashMap<String, Properties>();
+
+        // when
+        for (String localeSuffix : BUNDLE_LOCALES) {
+            bundles.put(localeSuffix, loadBundle(localeSuffix));
+        }
+
+        // then
+        assertEquals(BUNDLE_LOCALES.length, bundles.size());
+        for (Map.Entry<String, Properties> entry : bundles.entrySet()) {
+            String bundleName = "qcadooView_" + entry.getKey();
+            Properties bundle = entry.getValue();
+            for (String key : KEYBOARD_MOVE_AND_ANNOUNCEMENT_KEYS) {
+                String bundleKey = FALLBACK_TRANSLATION_PREFIX + key;
+                String value = bundle.getProperty(bundleKey);
+                assertNotNull(bundleName + " lacks " + bundleKey, value);
+                assertFalse(bundleName + " has a blank " + bundleKey, value.trim().isEmpty());
+            }
+            String keyboardHelp = bundle.getProperty(FALLBACK_TRANSLATION_PREFIX + KEYBOARD_HELP_KEY);
+            assertEquals(bundleName + " " + FALLBACK_TRANSLATION_PREFIX + KEYBOARD_HELP_KEY + " must contain "
+                    + GRID_MINUTES_PLACEHOLDER + " exactly once", 1, countOccurrences(keyboardHelp, GRID_MINUTES_PLACEHOLDER));
+        }
     }
 
 }

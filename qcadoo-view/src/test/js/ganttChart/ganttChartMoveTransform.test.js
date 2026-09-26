@@ -315,6 +315,37 @@ test('isDraggable is false for items without id', () => {
         'an item with an id is draggable at H1');
 });
 
+// Asserts only non-zero integer number ids from -(2^53 - 1) to 2^53 - 1 are draggable, whatever the zoom level allows.
+test('isDraggable is false for ids outside the safe-integer range', () => {
+    for (const id of [7, 1, -1, 9007199254740991, -9007199254740991, JSON.parse('{"id":9007199254740991}').id]) {
+        assert.equal(T.isDraggable({ id }, false, true, 1, CELL_WIDTH, GRID_MINUTES), true, `id ${id} is draggable at H1`);
+        assert.equal(T.isDraggable({ id }, false, true, 3, CELL_WIDTH, GRID_MINUTES), true, `id ${id} is draggable at H3`);
+    }
+
+    const roundedId = JSON.parse('{"id":9007199254740993}').id;
+    assert.equal(roundedId, 9007199254740992, 'JSON.parse rounds 9007199254740993 to 9007199254740992');
+
+    const unsafeIds = [9007199254740992, -9007199254740992, roundedId, JSON.parse('{"id":12345678901234567890}').id, 1e300,
+        -1e300, 7.5, -0.5, Number.MIN_VALUE, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, '7', true,
+        [7], { valueOf: () => 7 }, 0, -0, null, undefined];
+    for (const id of unsafeIds) {
+        assert.strictEqual(T.isDraggable({ id }, false, true, 1, CELL_WIDTH, GRID_MINUTES), false,
+            `id ${typeof id === 'object' && id !== null ? JSON.stringify(id) : String(id)} is not draggable`);
+    }
+
+    const unsafeItem = {
+        id: roundedId,
+        row: 'L1',
+        info: { name: 'ORD-X', dateFrom: '2026-06-01 09:00:00', dateTo: '2026-06-01 10:00:00' }
+    };
+    assert.equal(T.isDraggable(unsafeItem, false, true, 1, CELL_WIDTH, GRID_MINUTES), false,
+        'an item whose id JSON.parse rounded is not draggable');
+    assert.equal(T.isDraggable({ id: 9007199254740991 }, false, true, 6, CELL_WIDTH, GRID_MINUTES), false,
+        'a safe id stays not draggable where one grid step is narrower than the drag threshold');
+    assert.equal(T.isDraggable({ id: 9007199254740991 }, true, true, 1, CELL_WIDTH, GRID_MINUTES), false,
+        'a collision item with a safe id is not draggable');
+});
+
 // Asserts &, <, >, " and ' are replaced by character references and other text passes unchanged.
 test('escapeHtml encodes markup characters', () => {
     const expectedEntities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -428,6 +459,95 @@ test('parseWallClock rejects malformed input and round-trips valid input', () =>
     assert.equal(T.toDropDate('garbage', 25, 1, CELL_WIDTH, GRID_MINUTES), null);
     assert.equal(T.toPixelDelta('garbage', '2026-06-01 10:00:00', 1, CELL_WIDTH), 0);
     assert.equal(T.toPixelDelta('2026-06-01 10:00:00', 'garbage', 1, CELL_WIDTH), 0);
+});
+
+// Asserts every year from 0000 to 0099, and sample later years, parse to their literal proleptic Gregorian date, format
+// back to the same text, and move by wall-clock grid steps without leaving the literal year.
+test('wall-clock years 0000 to 0099 keep their literal year', () => {
+    // Minutes of five 400-year Gregorian cycles, 2000 years of 146097 days per cycle.
+    const twoThousandYearsMinutes = 5 * 146097 * 1440;
+    const years = [];
+    for (let year = 0; year <= 99; year++) {
+        years.push(year);
+    }
+    years.push(100, 400, 1582, 1900, 1970, 2026, 9999);
+
+    for (const year of years) {
+        const text = `${String(year).padStart(4, '0')}-03-01 10:30:00`;
+        // Oracle: the same wall-clock date 2000 years later, where Date.UTC reads the year as written, minus 2000 years.
+        const expectedMinutes = Date.UTC(year + 2000, 2, 1, 10, 30, 0) / 60000 - twoThousandYearsMinutes;
+        assert.equal(T.parseWallClock(text), expectedMinutes, `${text} parses to its literal year`);
+        assert.equal(T.formatWallClock(expectedMinutes), text, `${text} formats back to the same text`);
+    }
+
+    assert.ok(T.parseWallClock('0099-01-01 10:00:00') < T.parseWallClock('0100-01-01 00:00:00'),
+        'year 0099 lies before year 0100');
+    assert.ok(T.parseWallClock('0100-01-01 00:00:00') < T.parseWallClock('1999-01-01 10:00:00'),
+        'year 0100 lies before year 1999');
+    assert.equal(T.parseWallClock('1999-01-01 10:00:00') - T.parseWallClock('0099-01-01 10:00:00'),
+        (Date.UTC(3999, 0, 1, 10, 0, 0) - Date.UTC(2099, 0, 1, 10, 0, 0)) / 60000, '0099 and 1999 lie 1900 years apart');
+
+    assert.equal(T.toDropDate('0099-01-01 10:00:00', 12.5, 1, CELL_WIDTH, GRID_MINUTES), '0099-01-01 10:30:00');
+    assert.equal(T.toDropDate('0099-12-31 23:30:00', 12.5, 1, CELL_WIDTH, GRID_MINUTES), '0100-01-01 00:00:00');
+    assert.equal(T.toDropDate('0100-01-01 00:00:00', -12.5, 1, CELL_WIDTH, GRID_MINUTES), '0099-12-31 23:30:00');
+    assert.equal(T.toDropDate('0000-01-01 00:00:00', 12.5, 1, CELL_WIDTH, GRID_MINUTES), '0000-01-01 00:30:00');
+    assert.equal(T.toDropDate('0000-01-01 00:30:00', -12.5, 1, CELL_WIDTH, GRID_MINUTES), '0000-01-01 00:00:00');
+    assert.equal(T.toDropDate('0050-06-01 09:00:00', 2 * T.gridStepPx(3, CELL_WIDTH, GRID_MINUTES), 3, CELL_WIDTH,
+        GRID_MINUTES), '0050-06-01 10:00:00');
+    assert.equal(T.toPixelDelta('0099-01-01 10:00:00', '0099-01-01 10:30:00', 1, CELL_WIDTH), 12.5);
+    assert.equal(T.toPixelDelta('0099-12-31 23:30:00', '0100-01-01 00:00:00', 1, CELL_WIDTH), 12.5);
+
+    const zoneResults = (timeZone) => withTimeZone(timeZone, () => [
+        T.parseWallClock('0099-01-01 10:00:00'),
+        T.toDropDate('0099-01-01 10:00:00', 12.5, 1, CELL_WIDTH, GRID_MINUTES),
+        T.formatWallClock(T.parseWallClock('0000-02-29 12:00:00'))
+    ]);
+    const utcZoneResults = zoneResults('UTC');
+    assert.deepEqual(utcZoneResults, [T.parseWallClock('0099-01-01 10:00:00'), '0099-01-01 10:30:00', '0000-02-29 12:00:00']);
+    for (const timeZone of ['Asia/Tokyo', 'America/Los_Angeles', 'Europe/Warsaw', 'Pacific/Kiritimati']) {
+        assert.deepEqual(zoneResults(timeZone), utcZoneResults, `years 0000 to 0099 do not depend on the ${timeZone} zone`);
+    }
+});
+
+// Asserts dates that do not exist parse to null and give no drop date or pixel delta, leap days round-trip, and minutes
+// before 0000-01-01 00:00:00 or from 10000-01-01 00:00:00 on neither format nor yield a drop date.
+test('wall-clock dates outside the calendar or the years 0000 to 9999 are rejected', () => {
+    const impossibleDates = ['0100-02-29 10:00:00', '1900-02-29 10:00:00', '2026-02-29 10:00:00', '2026-02-30 10:00:00',
+        '2026-04-31 10:00:00', '2026-13-01 00:00:00', '2026-00-10 00:00:00', '2026-06-00 00:00:00', '2026-06-32 00:00:00',
+        '2026-06-01 24:00:00', '2026-06-01 10:60:00', '2026-06-01 10:30:60', '0000-00-00 00:00:00', '9999-12-31 24:00:00'];
+    for (const impossible of impossibleDates) {
+        assert.equal(T.parseWallClock(impossible), null, `${impossible} does not parse`);
+        assert.equal(T.toDropDate(impossible, 12.5, 1, CELL_WIDTH, GRID_MINUTES), null, `${impossible} gives no drop date`);
+        assert.equal(T.toPixelDelta(impossible, '2026-06-01 10:00:00', 1, CELL_WIDTH), 0,
+            `${impossible} as the original date gives no pixel delta`);
+        assert.equal(T.toPixelDelta('2026-06-01 10:00:00', impossible, 1, CELL_WIDTH), 0,
+            `${impossible} as the target date gives no pixel delta`);
+    }
+
+    for (const leapDay of ['0000-02-29 12:00:00', '0004-02-29 10:00:00', '0400-02-29 10:00:00', '2000-02-29 00:00:00',
+        '2028-02-29 23:30:00']) {
+        assert.equal(T.formatWallClock(T.parseWallClock(leapDay)), leapDay, `${leapDay} round-trips`);
+    }
+
+    const firstMinutes = T.parseWallClock('0000-01-01 00:00:00');
+    const lastMinutes = T.parseWallClock('9999-12-31 23:59:00');
+    assert.equal(firstMinutes, Date.UTC(2000, 0, 1, 0, 0, 0) / 60000 - 5 * 146097 * 1440);
+    assert.equal(lastMinutes, Date.UTC(11999, 11, 31, 23, 59, 0) / 60000 - 5 * 146097 * 1440);
+    assert.equal(T.formatWallClock(firstMinutes), '0000-01-01 00:00:00');
+    assert.equal(T.formatWallClock(lastMinutes), '9999-12-31 23:59:00');
+    const lastSecondMinutes = minutesOf('9999-12-31 23:59:59');
+    assert.ok(Math.abs(lastSecondMinutes - (lastMinutes + 59 / 60)) < 1e-6, '9999-12-31 23:59:59 lies 59 s after 23:59:00');
+    assert.equal(T.formatWallClock(lastSecondMinutes), '9999-12-31 23:59:59');
+
+    for (const outOfRange of [firstMinutes - 1, firstMinutes - 1 / 60, firstMinutes - 400 * 525600, lastMinutes + 1,
+        lastMinutes + 400 * 525600, 8.64e15 / 60000 + 1, -8.64e15 / 60000 - 1, Number.MAX_VALUE, -Number.MAX_VALUE]) {
+        assert.equal(T.formatWallClock(outOfRange), null, `${outOfRange} wall-clock minutes do not format`);
+    }
+
+    assert.equal(T.toDropDate('0000-01-01 00:00:00', -12.5, 1, CELL_WIDTH, GRID_MINUTES), null);
+    assert.equal(T.toDropDate('9999-12-31 23:30:00', 12.5, 1, CELL_WIDTH, GRID_MINUTES), null);
+    assert.equal(T.toDropDate('9999-12-31 23:30:00', 0, 1, CELL_WIDTH, GRID_MINUTES), '9999-12-31 23:30:00');
+    assert.equal(T.toDropDate('9999-12-31 23:30:00', -12.5, 1, CELL_WIDTH, GRID_MINUTES), '9999-12-31 23:00:00');
 });
 
 // Asserts minutes round to the nearest 30-minute multiple, with Math.round half-way behaviour and signed zero.

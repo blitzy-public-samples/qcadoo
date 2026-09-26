@@ -92,8 +92,6 @@ public class GanttChartComponentState extends AbstractComponentState {
 
     private static final String L_ITEM_ID = "itemId";
 
-    private static final String L_RELOAD_REQUIRED = "reloadRequired";
-
     private static final String L_ROW = "row";
 
     private static final String L_DATE_FROM = "dateFrom";
@@ -119,9 +117,6 @@ public class GanttChartComponentState extends AbstractComponentState {
     private static final String L_MOVE_ERROR_PREFIX = "move.error.";
 
     private static final String L_NOT_HANDLED = "notHandled";
-
-    /** Translation suffix of the message of an accepted move whose chart has to be reloaded. */
-    private static final String L_MOVE_RELOAD_REQUIRED = "move.reloadRequired";
 
     private static final String L_MOVE_DISABLED = "moveDisabled";
 
@@ -161,6 +156,9 @@ public class GanttChartComponentState extends AbstractComponentState {
 
     /** Outcome of the moveItem event of this request; null when no move ran. */
     private JSONObject moveResult;
+
+    /** Whether {@link #acceptMove()} has finished re-resolving the chart of the accepted move of this request. */
+    private boolean acceptedChartRefreshed;
 
     public GanttChartComponentState(final GanttChartItemResolver itemResolver, final GanttChartComponentPattern pattern) {
         super(pattern);
@@ -243,31 +241,40 @@ public class GanttChartComponentState extends AbstractComponentState {
     }
 
     /**
-     * Renders the chart content. A move that is not accepted, and an accepted move whose result carries
-     * {@code reloadRequired}, render only their {@code moveResult}. An accepted move renders the whole chart together with its
-     * {@code moveResult}; when that chart fails to render, the failure is logged and the content is only an accepted
-     * {@code moveResult} with {@code reloadRequired} set to true and the translated reload-required message. Without a move
-     * the chart renders without a {@code moveResult} key.
+     * Renders the chart content:
+     * <ul>
+     * <li>no move in this request: the chart without a {@code moveResult} key;</li>
+     * <li>a move that is not accepted: only its {@code moveResult};</li>
+     * <li>an accepted move whose chart {@link #acceptMove()} has re-resolved: the whole chart together with its
+     * {@code moveResult}; a {@link JSONException} or runtime exception thrown while that chart renders propagates
+     * unchanged;</li>
+     * <li>an accepted move whose chart {@link #acceptMove()} has not finished re-resolving: throws an
+     * {@link IllegalStateException} naming the item id of the move result, and renders nothing.</li>
+     * </ul>
+     *
+     * @return the rendered content
+     * @throws JSONException
+     *             when the chart cannot be written as JSON
+     * @throws IllegalStateException
+     *             when the chart of the accepted move has not been re-resolved
      */
     @Override
     protected JSONObject renderContent() throws JSONException {
-
-        if (moveResult != null && (!moveResult.optBoolean(L_ACCEPTED) || moveResult.optBoolean(L_RELOAD_REQUIRED))) {
-            return renderMoveResultOnly();
-        }
 
         if (moveResult == null) {
             return renderChart();
         }
 
-        JSONObject json;
-        try {
-            json = renderChart();
-        } catch (JSONException | RuntimeException e) {
-            LOG.error("Failed to render the Gantt chart of an accepted move", e);
-            setMoveResult(moveResult.opt(L_ITEM_ID), true, true, translate(L_MOVE_RELOAD_REQUIRED));
+        if (!moveResult.optBoolean(L_ACCEPTED)) {
             return renderMoveResultOnly();
         }
+
+        if (!acceptedChartRefreshed) {
+            throw new IllegalStateException("The Gantt chart of the accepted move of item " + moveResult.opt(L_ITEM_ID)
+                    + " has not been refreshed");
+        }
+
+        JSONObject json = renderChart();
         json.put(L_MOVE_RESULT, moveResult);
         return json;
     }
@@ -365,27 +372,26 @@ public class GanttChartComponentState extends AbstractComponentState {
     }
 
     /**
-     * Accepts the move: marks the move result as accepted, then re-resolves the chart items and collisions. When the
-     * re-resolution succeeds, the accepted result renders together with the refreshed chart. When it fails with a runtime
-     * exception, the failure is logged, no exception is thrown, and the accepted result keeps {@code reloadRequired} set to
-     * true and the translated reload-required message, so the content is only that result. Without a move result the chart
+     * Accepts the move: replaces the move result with an accepted result for the same item id, without a message, requests
+     * rendering, and then re-resolves the chart items and collisions through the {@code refresh} event handler. Once the
+     * re-resolution returns, the accepted result renders together with the refreshed chart. A runtime exception thrown while
+     * the chart is re-resolved propagates unchanged; the accepted result then stays marked as not refreshed, so
+     * {@link #renderContent()} throws an {@link IllegalStateException} instead of rendering it. Without a move result the chart
      * items and collisions are only re-resolved.
+     *
+     * @throws IllegalStateException
+     *             when the item id of the move result cannot be written as JSON
      */
     public void acceptMove() {
         if (moveResult == null) {
             eventPerformer.refresh(new String[0]);
             return;
         }
-        Object itemId = moveResult.opt(L_ITEM_ID);
-        setMoveResult(itemId, true, true, translate(L_MOVE_RELOAD_REQUIRED));
+        setMoveResult(moveResult.opt(L_ITEM_ID), true, null);
+        acceptedChartRefreshed = false;
         requestRender();
-        try {
-            eventPerformer.refresh(new String[0]);
-        } catch (RuntimeException e) {
-            LOG.error("Failed to refresh the Gantt chart after an accepted move", e);
-            return;
-        }
-        setMoveResult(itemId, true, null);
+        eventPerformer.refresh(new String[0]);
+        acceptedChartRefreshed = true;
     }
 
     /**
@@ -413,7 +419,8 @@ public class GanttChartComponentState extends AbstractComponentState {
     }
 
     /**
-     * Replaces the move result with a new one without {@code reloadRequired}.
+     * Replaces the move result with a new one holding {@code itemId} ({@link JSONObject#NULL} for a null item id),
+     * {@code accepted} and, only for a non-null message, {@code message}.
      *
      * @param itemId
      *            entity id of the moved item, or null when unknown
@@ -421,31 +428,14 @@ public class GanttChartComponentState extends AbstractComponentState {
      *            whether the move is accepted
      * @param message
      *            message shown to the user, or null for none
+     * @throws IllegalStateException
+     *             caused by the {@link JSONException} thrown when {@code itemId} cannot be written as JSON
      */
     private void setMoveResult(final Object itemId, final boolean accepted, final String message) {
-        setMoveResult(itemId, accepted, false, message);
-    }
-
-    /**
-     * Replaces the move result with a new one.
-     *
-     * @param itemId
-     *            entity id of the moved item, or null when unknown
-     * @param accepted
-     *            whether the move is accepted
-     * @param reloadRequired
-     *            whether the result carries {@code reloadRequired} set to true; when false the key is absent
-     * @param message
-     *            message shown to the user, or null for none
-     */
-    private void setMoveResult(final Object itemId, final boolean accepted, final boolean reloadRequired, final String message) {
         JSONObject result = new JSONObject();
         try {
             result.put(L_ITEM_ID, itemId == null ? JSONObject.NULL : itemId);
             result.put(L_ACCEPTED, accepted);
-            if (reloadRequired) {
-                result.put(L_RELOAD_REQUIRED, true);
-            }
             if (message != null) {
                 result.put(L_MESSAGE, message);
             }

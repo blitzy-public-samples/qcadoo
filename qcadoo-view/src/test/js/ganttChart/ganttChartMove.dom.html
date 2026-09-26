@@ -29,9 +29,11 @@
 
     The head loads every stylesheet and script of the uncompressed branch of WEB-INF/jsp/crud/crudView.jsp, in the same
     order, from src/main/resources/qcadooView/public. The body holds a fixed 800 x 300 px host into which
-    window.__loadBoard(name, overrides) renders the component.jsp and ganttChart.jsp markup of window.mainTab.gantt and
-    constructs QCD.components.elements.GanttChart the way pageConstructor.js does. window.mainController is a recording
-    stub that answers every event with canned values after a zero delay.
+    window.__loadBoard(name, overrides) renders the component.jsp and ganttChart.jsp markup of
+    window.mainTab.gridLayout.gantt, the component path of the gantt component of the productionMaintenanceGantt view,
+    and constructs QCD.components.elements.GanttChart the way pageConstructor.js does. window.mainController is a
+    recording stub that answers every event with canned values after a zero delay, except a moveItem with an
+    httpReply answer, which runs through the real event transport.
 
     Page API:
       window.__loadBoard(name, overrides)  renders board `name`; overrides.options and overrides.board replace keys of the
@@ -41,9 +43,33 @@
       window.__gantt                       the constructed GanttChart component
       window.__calls                       recorded events, each {eventName, component, args}
       window.__messages                    messages passed to mainController.showMessage
-      window.__nextMoveResponse            answer of the next moveItem: {kind: 'rejected', message},
-                                           {kind: 'accepted', board} or {kind: 'failure'}; with hold: true the
+      window.__nextMoveResponse            answer of the next moveItem, one of the kinds below; with hold: true the
                                            moveItem is recorded and its answer waits for window.__releaseHeldMove()
+                                             {kind: 'rejected', message}     content {moveResult: {itemId,
+                                                                             accepted: false, message}} only
+                                             {kind: 'accepted', board}       the board content plus moveResult
+                                                                             {itemId, accepted: true}; board becomes
+                                                                             window.__currentBoard
+                                             {kind: 'failure'}               a failed request: runs only the
+                                                                             complete function
+                                             {kind: 'serverError'}           the framework error page: passes the
+                                                                             failure message SERVER_ERROR_MESSAGE to
+                                                                             mainController.showMessage, then runs
+                                                                             only the complete function
+                                             {kind: 'acceptedWithoutBoard'}  content {moveResult: {itemId,
+                                                                             accepted: true}} only
+                                             {kind: 'httpReply', status, body}
+                                                                             sends the moveItem through the real
+                                                                             QCD.PageController.callEvent,
+                                                                             performEvent, QCDConnector.sendPost and
+                                                                             jQuery.ajax of a page controller without
+                                                                             page components; an XMLHttpRequest
+                                                                             stand-in answers it with that status and
+                                                                             body and a JSON content type (hold does
+                                                                             not apply)
+                                           null answers with the default response
+      window.__httpRequests                requests sent for httpReply answers, each {method, url, async, body, headers}
+      window.__headerButtonCalls           "block" and "unblock" calls of the window header of that page controller
       window.__releaseHeldMove()           answers the held moveItem after a zero delay, with the generation check and
                                            the __seq and __lastResponseApplied bookkeeping of every answer; returns
                                            false after recording a fixture error when no moveItem is held
@@ -54,7 +80,7 @@
     Boards: h1, h3, h6, d1, offGrid, covered, markupRows, dst, scrolled, moveDisabled.
 
     After each answer that unblocks the component, the blockUI overlay of LoadingIndicator fades out for 400 ms and
-    stays over the chart until no .blockUI element remains inside window.mainTab.gantt.
+    stays over the chart until no .blockUI element remains inside window.mainTab.gridLayout.gantt.
 -->
 <html>
 <head>
@@ -195,13 +221,23 @@
         (function () {
             "use strict";
 
-            var GANTT_PATH = "window.mainTab.gantt";
+            // Component path of the gantt component, which the productionMaintenanceGantt view nests in gridLayout.
+            var GANTT_PATH = "window.mainTab.gridLayout.gantt";
             var GANTT_JS_OBJECT = "QCD.components.elements.GanttChart";
             var HOST_ID = "ganttHost";
             var HOST_WIDTH = 800;
             var HOST_HEIGHT = 300;
             var FIXTURE_SOURCE = "ganttChartMove.dom.html";
             var DEFAULT_MOVE_RESPONSE = {kind: "rejected", message: "Rejected by fixture"};
+
+            // Message that QCDConnector.showErrorMessage passes to mainController.showMessage for the framework error
+            // page.
+            var SERVER_ERROR_MESSAGE = {
+                title: "An error occurred in the system",
+                content: "An error has occurred in the system. Please contact us or, if you are using the OS version,"
+                    + " see the logs.",
+                type: "failure"
+            };
 
             // Hours spanned by one chart cell per zoom level.
             var HOURS_INTERVALS = {H1: 1, H3: 3, H6: 6, D1: 24};
@@ -215,10 +251,12 @@
 
             var WEEK_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-            var MAINTENANCE_STRIP = {color: "#F5A623", size: 100};
+            // Strip of a planned maintenance event without shutdown, in
+            // ProductionMaintenanceGanttChartItemResolver.MAINTENANCE_COLOR.
+            var MAINTENANCE_STRIP = {color: "#2E86C1", size: 100};
 
-            // Component options of window.mainTab.gantt: the GanttChartComponentPattern.getJsOptions keys and the
-            // base component pattern keys.
+            // Component options of window.mainTab.gridLayout.gantt: the GanttChartComponentPattern.getJsOptions keys
+            // and the base component pattern keys.
             var BASE_OPTIONS = {
                 translations: {
                     "header.label": "Gantt",
@@ -258,6 +296,8 @@
             window.__gantt = null;
             window.__calls = [];
             window.__messages = [];
+            window.__httpRequests = [];
+            window.__headerButtonCalls = [];
             window.__seq = 0;
             window.__lastResponseApplied = null;
             window.__currentBoard = null;
@@ -378,7 +418,8 @@
                 };
             }
 
-            // Builds board content in the GanttChartComponentState.renderContent JSON shape.
+            // Builds board content in the GanttChartComponentState.renderContent JSON shape with the
+            // GanttChartComponentPattern defaults: itemsBorderWidth 0 and no itemsBorderColor key.
             function board(zoomLevel, dateFrom, dateTo, scale, rows, items, collisions) {
                 return {
                     zoomLevel: zoomLevel,
@@ -386,7 +427,7 @@
                     dateTo: dateTo,
                     scale: scale,
                     stripsOrientation: "horizontal",
-                    itemsBorderWidth: 1,
+                    itemsBorderWidth: 0,
                     rows: rows.slice(),
                     items: items,
                     collisions: collisions || []
@@ -524,7 +565,7 @@
                 return merged;
             }
 
-            // Builds the component.jsp and ganttChart.jsp markup for window.mainTab.gantt inside the host.
+            // Builds the component.jsp and ganttChart.jsp markup for window.mainTab.gridLayout.gantt inside the host.
             function buildComponentMarkup(options) {
                 var optionsJson = JSON.stringify(options);
                 if (/[&<>]/.test(optionsJson)) {
@@ -569,8 +610,8 @@
                 return resolved;
             }
 
-            // Constructs the component of window.mainTab.gantt as pageConstructor.js does, sizes it to the host and
-            // runs its initialization, which sends refresh.
+            // Constructs the component of window.mainTab.gridLayout.gantt as pageConstructor.js does, sizes it to the
+            // host and runs its initialization, which sends refresh.
             function constructGantt() {
                 var element = $(document.getElementById(GANTT_PATH));
                 var jsObjectElement = element.children(".element_js_object");
@@ -583,10 +624,17 @@
                 window.__gantt.performInitialize();
             }
 
-            // Builds the component value that pageController.setValueData passes to component.setValue; without
-            // content the value has no content key.
-            function valueWrapper(content) {
-                var value = {enabled: true, visible: true, permanentlyDisabled: false, messages: []};
+            // Builds the component value that pageController.setValueData passes to component.setValue, in the
+            // AbstractComponentState.render shape: updateState is true only when given as true, and without content the
+            // value has no content key.
+            function valueWrapper(content, updateState) {
+                var value = {
+                    enabled: true,
+                    visible: true,
+                    permanentlyDisabled: false,
+                    messages: [],
+                    updateState: updateState === true
+                };
                 if (content !== undefined) {
                     value.content = content;
                 }
@@ -624,7 +672,8 @@
                 return null;
             }
 
-            // Answers moveItem with the canned rejected, accepted or failed response of window.__nextMoveResponse.
+            // Answers moveItem with the canned rejected, accepted, failed, error-page or accepted-without-board
+            // response of window.__nextMoveResponse.
             function answerMoveItem(completeFunction, args) {
                 var itemId = readMoveItemId(args || []);
                 var response = window.__nextMoveResponse || DEFAULT_MOVE_RESPONSE;
@@ -634,7 +683,7 @@
                     if (response.message !== undefined && response.message !== null) {
                         moveResult.message = response.message;
                     }
-                    answerSuccess(completeFunction, valueWrapper({moveResult: moveResult}));
+                    answerSuccess(completeFunction, valueWrapper({moveResult: moveResult}, false));
                 } else if (response.kind === "accepted") {
                     if (!response.board || typeof response.board !== "object") {
                         recordFixtureError("Accepted moveItem response has no board");
@@ -644,26 +693,32 @@
                     var content = deepCopy(response.board);
                     content.moveResult = {itemId: itemId, accepted: true};
                     window.__currentBoard = deepCopy(response.board);
-                    answerSuccess(completeFunction, valueWrapper(content));
+                    answerSuccess(completeFunction, valueWrapper(content, true));
                     window.__gantt.updateSize(HOST_WIDTH, HOST_HEIGHT);
                 } else if (response.kind === "failure") {
                     answerFailure(completeFunction);
+                } else if (response.kind === "serverError") {
+                    window.mainController.showMessage(deepCopy(SERVER_ERROR_MESSAGE));
+                    answerFailure(completeFunction);
+                } else if (response.kind === "acceptedWithoutBoard") {
+                    moveResult = {itemId: itemId, accepted: true};
+                    answerSuccess(completeFunction, valueWrapper({moveResult: moveResult}, false));
                 } else {
                     recordFixtureError("Unknown moveItem response kind: " + String(response.kind));
                     answerFailure(completeFunction);
                 }
             }
 
-            // Answers refresh and initialize with the current board, moveItem with the canned response, and every
-            // other event, select included, with a value without content.
+            // Answers refresh and initialize with the current board and updateState true, moveItem with the canned
+            // response, and every other event, select included, with a value without content and updateState false.
             function answerEvent(eventName, completeFunction, args) {
                 if (eventName === "refresh" || eventName === "initialize") {
-                    answerSuccess(completeFunction, valueWrapper(deepCopy(window.__currentBoard)));
+                    answerSuccess(completeFunction, valueWrapper(deepCopy(window.__currentBoard), true));
                     window.__gantt.updateSize(HOST_WIDTH, HOST_HEIGHT);
                 } else if (eventName === "moveItem") {
                     answerMoveItem(completeFunction, args);
                 } else {
-                    answerSuccess(completeFunction, valueWrapper());
+                    answerSuccess(completeFunction, valueWrapper(undefined, false));
                 }
             }
 
@@ -690,16 +745,135 @@
                 };
             }
 
+            // Content type of every reply of the XMLHttpRequest stand-in.
+            var HTTP_REPLY_CONTENT_TYPE = "application/json;charset=UTF-8";
+
+            // Page controller that sends the moveItem events of httpReply answers, or null until the first of them.
+            var transportController = null;
+
+            // Returns the page controller of httpReply answers. On first use it is created without running its
+            // constructor, so it has no page components, and it gets a window header that records its blockButtons and
+            // unblockButtons calls in window.__headerButtonCalls.
+            function getTransportController() {
+                if (transportController === null) {
+                    transportController = new QCD.PageController();
+                    transportController.setWindowHeaderComponent({
+                        blockButtons: function () {
+                            window.__headerButtonCalls.push("block");
+                        },
+                        unblockButtons: function () {
+                            window.__headerButtonCalls.push("unblock");
+                        }
+                    });
+                }
+                return transportController;
+            }
+
+            // Returns an XMLHttpRequest stand-in class for one reply. send records the request in window.__httpRequests
+            // and completes it at once with the reply's status and body, the status text "OK" for 200 and "Error"
+            // otherwise, and the HTTP_REPLY_CONTENT_TYPE header; jQuery then answers after a zero delay.
+            function replyXhrClass(reply) {
+                function ReplyXhr() {
+                    this.readyState = 0;
+                    this.status = 0;
+                    this.statusText = "";
+                    this.responseText = "";
+                    this.responseXML = null;
+                    this.onreadystatechange = null;
+                    this.request = {method: null, url: null, async: null, body: null, headers: {}};
+                }
+                ReplyXhr.prototype.open = function (method, requestUrl, async) {
+                    this.request.method = method;
+                    this.request.url = requestUrl;
+                    this.request.async = async;
+                    this.readyState = 1;
+                };
+                ReplyXhr.prototype.setRequestHeader = function (name, value) {
+                    this.request.headers[name] = value;
+                };
+                ReplyXhr.prototype.send = function (body) {
+                    this.request.body = body === undefined ? null : body;
+                    window.__httpRequests.push(deepCopy(this.request));
+                    this.status = reply.status;
+                    this.statusText = reply.status === 200 ? "OK" : "Error";
+                    this.responseText = reply.body;
+                    this.readyState = 4;
+                };
+                ReplyXhr.prototype.getAllResponseHeaders = function () {
+                    return this.readyState === 4 ? "Content-Type: " + HTTP_REPLY_CONTENT_TYPE + "\r\n" : "";
+                };
+                ReplyXhr.prototype.getResponseHeader = function (name) {
+                    return this.readyState === 4 && String(name).toLowerCase() === "content-type"
+                        ? HTTP_REPLY_CONTENT_TYPE : null;
+                };
+                ReplyXhr.prototype.abort = function () {
+                    this.readyState = 0;
+                    this.status = 0;
+                    this.statusText = "";
+                    this.responseText = "";
+                };
+                return ReplyXhr;
+            }
+
+            // Returns whether the next moveItem is answered by an HTTP reply through the real event transport.
+            function isMoveSentOverHttp(eventName) {
+                return eventName === "moveItem" && !!window.__nextMoveResponse
+                    && window.__nextMoveResponse.kind === "httpReply";
+            }
+
+            // Sends a moveItem through QCD.PageController.callEvent, performEvent, QCDConnector.sendPost and
+            // jQuery.ajax of the transport page controller, with window.XMLHttpRequest replaced by the reply stand-in
+            // while the request is sent. The complete function the transport calls is dropped when a board is loaded
+            // before the reply is answered; otherwise it runs the complete function of the event and records the answer
+            // in window.__lastResponseApplied. A reply without a numeric status and a string body records a fixture
+            // error and is answered after a zero delay without a request.
+            function sendMoveOverHttp(completeFunction, args) {
+                var reply = window.__nextMoveResponse;
+                var callGeneration = generation;
+                var transportComplete = function () {
+                    if (callGeneration !== generation || !window.__gantt) {
+                        return;
+                    }
+                    try {
+                        if (completeFunction) {
+                            completeFunction();
+                        }
+                    } finally {
+                        window.__seq += 1;
+                        window.__lastResponseApplied = {eventName: "moveItem", seq: window.__seq};
+                    }
+                };
+                if (typeof reply.status !== "number" || typeof reply.body !== "string") {
+                    recordFixtureError("httpReply moveItem response needs a numeric status and a string body");
+                    setTimeout(transportComplete, 0);
+                    return;
+                }
+                var eventTransport = getTransportController();
+                var nativeXhr = window.XMLHttpRequest;
+                QCDConnector.windowName = "/page/" + pluginIdentifier + "/" + viewName;
+                QCDConnector.mainController = window.mainController;
+                window.XMLHttpRequest = replyXhrClass({status: reply.status, body: reply.body});
+                try {
+                    eventTransport.callEvent("moveItem", null, transportComplete, args);
+                } finally {
+                    window.XMLHttpRequest = nativeXhr;
+                }
+            }
+
             // Recording stub of QCD.PageController: callEvent and showMessage.
             window.mainController = {
-                // Records an event call, then answers it after a zero delay and records the answer in
-                // window.__lastResponseApplied.
+                // Records an event call, then answers it after a zero delay, or through the real event transport for an
+                // httpReply moveItem answer, and records the answer in window.__lastResponseApplied.
                 callEvent: function (eventName, component, completeFunction, args, actionsPerformer, type) {
                     window.__calls.push({
                         eventName: eventName,
                         component: component,
                         args: args ? Array.prototype.slice.call(args) : null
                     });
+                    if (isMoveSentOverHttp(eventName)) {
+                        sendMoveOverHttp(completeFunction, args);
+                        return;
+                    }
                     if (isMoveAnswerHeld(eventName)) {
                         holdMoveAnswer(completeFunction, args);
                         return;
@@ -725,7 +899,8 @@
             };
 
             // Renders a board: rebuilds the host markup with the merged options, sets the current board, resets the
-            // recorded calls, messages, last answer and next moveItem response, and constructs the component.
+            // recorded calls, messages, HTTP requests, header button calls, last answer and next moveItem response, and
+            // constructs the component.
             window.__loadBoard = function (name, overrides) {
                 var definition = boardDefinition(name);
                 var boardOverrides = overrides || {};
@@ -734,6 +909,8 @@
                 heldMoveAnswer = null;
                 window.__calls = [];
                 window.__messages = [];
+                window.__httpRequests = [];
+                window.__headerButtonCalls = [];
                 window.__lastResponseApplied = null;
                 window.__nextMoveResponse = deepCopy(DEFAULT_MOVE_RESPONSE);
                 window.__currentBoard = mergeBoard(definition.board, boardOverrides.board);

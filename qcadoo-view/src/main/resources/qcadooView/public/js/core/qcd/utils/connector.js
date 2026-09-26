@@ -120,7 +120,17 @@ QCDConnector.sendPost = function(parameters, responseFunction, errorFunction, ty
 				}
 				if (responseFunction) {
 					if (responseText != "") {
-						var response = JSON.parse(responseText);
+						var response;
+						try {
+							response = JSON.parse(responseText);
+						} catch (parseError) {
+							// A body that is not JSON is reported as a connection error with the jQuery status text.
+							QCDConnector.showErrorMessage("connection error: "+textStatus);
+							if (errorFunction) {
+								errorFunction(textStatus);
+							}
+							return;
+						}
 						responseFunction(response);
 					} else {
 						responseFunction(null);

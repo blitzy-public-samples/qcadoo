@@ -35,12 +35,12 @@
  *   node --test qcadoo/qcadoo-view/src/test/js/ganttChart/ganttChartMove.dom.test.js
  *
  * The runner starts chrome-headless-shell from PATH with a temporary gantt-dom-* profile, drives it over the DevTools
- * Protocol with the global WebSocket, and sends trusted mouse and touch input with Input.dispatchMouseEvent and
- * Input.dispatchTouchEvent. Before any case is registered it fails on a Node.js older than 22 or without the global
- * WebSocket, on a missing fixture and on a case list that differs from EXPECTED_CASE_NAMES. The run fails on a missing
- * chrome-headless-shell, a failed case and a manifest case that did not run, such as one excluded by a name, skip or
- * only filter. SIGINT, SIGTERM and SIGHUP stop chrome-headless-shell, remove its profile and exit with 128 + the
- * signal number.
+ * Protocol with the global WebSocket, and sends trusted mouse, touch and key input with Input.dispatchMouseEvent,
+ * Input.dispatchTouchEvent and Input.dispatchKeyEvent. Before any case is registered it fails on a Node.js older than 22
+ * or without the global WebSocket, on a missing fixture and on a case list that differs from EXPECTED_CASE_NAMES. The
+ * run fails on a missing chrome-headless-shell, a failed case and a manifest case that did not run, such as one excluded
+ * by a name, skip or only filter. SIGINT, SIGTERM and SIGHUP stop chrome-headless-shell, remove its profile and exit
+ * with 128 + the signal number.
  */
 'use strict';
 
@@ -122,6 +122,17 @@ const EXPECTED_CASE_NAMES = Object.freeze([
     'drop resolves the correct row in a scrolled pane',
     'drop outside the visible pane snaps back without a request',
     'row labels with markup render as text',
+    'keyboard: a draggable bar is a named, described button that Tab reaches with a visible focus ring, and other bars '
+        + 'take no focus',
+    'keyboard: arrow keys move the focused bar in 30-minute steps and whole rows within the board, and Enter sends one '
+        + 'moveItem',
+    'keyboard: Escape, blur, a pointer press and an unchanged Enter cancel a keyboard move without a request, and Enter '
+        + 'or Space on an idle bar selects it',
+    'keyboard: an accepted keyboard move announces the saved move and moves the focus to the rebuilt bar',
+    'pointer: an accepted drop announces the saved move, and a drag ended by pointercancel or by a drop outside the '
+        + 'pane announces the cancellation',
+    'a selected covered bar at z-index 220 rises to the drag layer (230) and stays topmost while dragged by pointer or '
+        + 'moved by keyboard, and so does a focused bar',
     'a failed request without moveResult snaps back',
     'an accepted moveResult rebuilds the board',
     're-rendering the board during a drag cancels it and a later drag moves the new bar',
@@ -132,7 +143,11 @@ const EXPECTED_CASE_NAMES = Object.freeze([
     'a re-render that moves the bar during a pending move anchors the rejection at its new place, and a later '
         + 're-render hides the rejection',
     'a click on another bar between a drag and its late click keeps the late click ignored',
-    'a non-integral or out-of-range pointer id is ignored while the native pointer is active'
+    'a non-integral or out-of-range pointer id is ignored while the native pointer is active',
+    'a malformed HTTP 200 moveItem reply snaps back through the transport error path',
+    'a committed move whose chart cannot be refreshed answers with the error page: the bar returns, the error is shown '
+        + 'and no second refresh is sent',
+    'an accepted moveResult without a chart restores the bar and leaves the chart and its header unchanged'
 ]);
 
 // Absolute path and file:// URL of the DOM fixture.
@@ -146,11 +161,11 @@ const VIEWPORT = { width: 1024, height: 768 };
 const PARK_POINT = { x: 1000, y: 740 };
 
 // Element id prefix of Gantt items and of collision box entries.
-const ITEM_ID_PREFIX = 'window.mainTab.gantt_item_';
-const COLLISION_ENTRY_ID_PREFIX = 'window.mainTab.gantt_collisionItem_';
+const ITEM_ID_PREFIX = 'window.mainTab.gridLayout.gantt_item_';
+const COLLISION_ENTRY_ID_PREFIX = 'window.mainTab.gridLayout.gantt_collisionItem_';
 
-// Element id of the Gantt component.
-const GANTT_ID = 'window.mainTab.gantt';
+// Element id and component path of the Gantt component, the gantt component of the productionMaintenanceGantt view.
+const GANTT_ID = 'window.mainTab.gridLayout.gantt';
 
 // Row height and horizontal width of one 30-minute grid step at H1, in pixels.
 const ROW_HEIGHT_PX = 30;
@@ -634,14 +649,22 @@ async function navigate(targetUrl) {
     }
 }
 
-// Navigates to the fixture, renders a board, waits for its refresh answer and for the chart to unblock, rests the
-// mouse outside the chart and asserts that the page recorded no error.
+// Navigates to the fixture, renders a board, waits for its refresh answer and for the chart to unblock, asserts that
+// the component path is GANTT_ID and that every recorded call, the refresh included, names GANTT_ID, rests the mouse
+// outside the chart and asserts that the page recorded no error.
 async function openBoard(name, overrides) {
     await navigate(FIXTURE_URL);
     await evaluate('window.__loadBoard(' + JSON.stringify(name) + ', '
         + (overrides === undefined ? 'undefined' : JSON.stringify(overrides)) + ')');
     await waitFor("window.__lastResponseApplied && __lastResponseApplied.eventName === 'refresh'");
     await waitFor(IS_UNBLOCKED_EXPR);
+    assert.equal(await evaluate('window.__gantt.elementPath'), GANTT_ID);
+    const calls = await evaluate('window.__calls.map(function (call) {'
+        + ' return {eventName: call.eventName, component: call.component}; })');
+    assert.ok(calls.some((call) => call.eventName === 'refresh'), 'recorded calls: ' + JSON.stringify(calls));
+    for (const call of calls) {
+        assert.equal(call.component, GANTT_ID, 'component of ' + call.eventName + ': ' + JSON.stringify(calls));
+    }
     await hover(PARK_POINT.x, PARK_POINT.y);
     await assertNoPageErrors();
 }
@@ -822,7 +845,7 @@ function isUnblocked() {
 }
 
 // Waits until the moveItem answer is applied when moves are expected, or 100 ms when none is, then asserts the number
-// of recorded moveItem calls and returns them.
+// of recorded moveItem calls and that each names GANTT_ID, and returns them.
 async function afterDrop(expectedMoveCount) {
     if (expectedMoveCount > 0) {
         await waitFor('window.__calls.filter(function (call) { return call.eventName === "moveItem"; }).length === '
@@ -833,6 +856,9 @@ async function afterDrop(expectedMoveCount) {
     }
     const calls = await moveCalls();
     assert.equal(calls.length, expectedMoveCount, 'moveItem calls: ' + JSON.stringify(calls));
+    for (const call of calls) {
+        assert.equal(call.component, GANTT_ID, 'moveItem component: ' + JSON.stringify(calls));
+    }
     return calls;
 }
 
@@ -882,7 +908,132 @@ function horizontalSteps(step, limit) {
     return deltas;
 }
 
-// The 26 DOM cases, each {name, run}.
+// Keyboard help and move announcement translations of the component options, as GanttChartComponentPattern delivers
+// them; "{0}" in the help stands for the grid step in minutes.
+const MOVE_A11Y_TRANSLATIONS = Object.freeze({
+    'move.keyboardHelp': 'Press Enter or Space to select this item. Press an arrow key to move it by {0} minutes or by'
+        + ' one row, then press Enter to confirm the move or Escape to cancel it.',
+    'move.acceptedAnnouncement': 'Move saved. The chart shows the updated schedule.',
+    'move.cancelledAnnouncement': 'Move cancelled. The item is back at its original place.'
+});
+
+// openBoard overrides that add MOVE_A11Y_TRANSLATIONS to the component options.
+const A11Y_OVERRIDES = Object.freeze({ options: { translations: MOVE_A11Y_TRANSLATIONS } });
+
+// Keyboard help text of a board with the 30-minute grid.
+const KEYBOARD_HELP_30 = MOVE_A11Y_TRANSLATIONS['move.keyboardHelp'].replace('{0}', '30');
+
+// Page expressions of the polite status and the assertive alert live regions of the chart.
+const STATUS_REGION_EXPR = "document.querySelector('#ganttHost .ganttChartLiveRegion[role=status]')";
+const ALERT_REGION_EXPR = "document.querySelector('#ganttHost .ganttChartLiveRegion[role=alert]')";
+
+// Tab presses after which a case gives up reaching an element with the keyboard.
+const MAX_TAB_PRESSES = 40;
+
+// DevTools key definitions of the keys the keyboard cases press: key, code and Windows virtual key code, and for keys
+// that insert text, the text of their keyDown event.
+const KEY_DEFINITIONS = Object.freeze({
+    Enter: { key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
+    Space: { key: ' ', code: 'Space', keyCode: 32, text: ' ' },
+    Escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
+    Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
+    ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
+    ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
+    ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+    ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 }
+});
+
+// Presses and releases a key of KEY_DEFINITIONS with Input.dispatchKeyEvent, a keyDown with text for a key that inserts
+// text and a rawKeyDown for any other key, followed by a keyUp, then waits for the page to render.
+async function keyPress(name) {
+    const definition = KEY_DEFINITIONS[name];
+    assert.ok(definition, 'No key definition for ' + name);
+    const params = {
+        key: definition.key,
+        code: definition.code,
+        windowsVirtualKeyCode: definition.keyCode,
+        nativeVirtualKeyCode: definition.keyCode
+    };
+    if (definition.text !== undefined) {
+        await send('Input.dispatchKeyEvent',
+            { ...params, type: 'keyDown', text: definition.text, unmodifiedText: definition.text });
+    } else {
+        await send('Input.dispatchKeyEvent', { ...params, type: 'rawKeyDown' });
+    }
+    await send('Input.dispatchKeyEvent', { ...params, type: 'keyUp' });
+    await settle();
+}
+
+// Presses a key of KEY_DEFINITIONS the given number of times.
+async function keyPresses(name, count) {
+    for (let i = 0; i < count; i++) {
+        await keyPress(name);
+    }
+}
+
+// Runs steps with focus emulation enabled, under which the page keeps the focus of an active window, and disables it
+// afterwards.
+async function withFocus(steps) {
+    await send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    try {
+        await steps();
+    } finally {
+        await send('Emulation.setFocusEmulationEnabled', { enabled: false });
+    }
+}
+
+// Returns the tabindex, role, aria-label and aria-describedby attributes of the element of a page expression, each null
+// when absent; throws when there is no element.
+async function a11yAttributes(elementExpr) {
+    const attributes = await evaluate('(function () { var element = ' + elementExpr + ';'
+        + ' if (!element) { return null; }'
+        + ' return {tabindex: element.getAttribute("tabindex"), role: element.getAttribute("role"),'
+        + ' label: element.getAttribute("aria-label"), describedBy: element.getAttribute("aria-describedby")}; }())');
+    assert.ok(attributes, 'No element for ' + elementExpr);
+    return attributes;
+}
+
+// Returns the text content of the element of a page expression, or null when there is no element.
+function elementText(elementExpr) {
+    return evaluate('(function () { var element = ' + elementExpr + ';'
+        + ' return element ? element.textContent : null; }())');
+}
+
+// Returns whether the element of a page expression is document.activeElement.
+function isFocused(elementExpr) {
+    return evaluate('(function () { var element = ' + elementExpr + ';'
+        + ' return !!element && document.activeElement === element; }())');
+}
+
+// Focuses the element of a page expression with focus() and asserts that it has the focus.
+async function focusElement(elementExpr) {
+    await evaluate('(function () { var element = ' + elementExpr + '; if (element) { element.focus(); } return true; }())');
+    await settle();
+    assert.equal(await isFocused(elementExpr), true, 'focus on ' + elementExpr);
+}
+
+// Returns the computed z-index and outline of the element of a page expression and whether it matches :focus-visible.
+async function focusStyle(elementExpr) {
+    const style = await evaluate('(function () { var element = ' + elementExpr + ';'
+        + ' if (!element) { return null; }'
+        + ' var computed = getComputedStyle(element);'
+        + ' return {zIndex: computed.zIndex, outlineStyle: computed.outlineStyle, outlineWidth: computed.outlineWidth,'
+        + ' outlineColor: computed.outlineColor, outlineOffset: computed.outlineOffset,'
+        + ' focusVisible: element.matches(":focus-visible")}; }())');
+    assert.ok(style, 'No element for ' + elementExpr);
+    return style;
+}
+
+// Returns the names of the recorded events in call order.
+function eventNames() {
+    return evaluate('window.__calls.map(function (call) { return call.eventName; })');
+}
+
+// Page expression of a short description of document.activeElement: its tag name, then its id when it has one.
+const ACTIVE_ELEMENT_EXPR = '(function () { var element = document.activeElement;'
+    + ' return element ? element.tagName + (element.id ? "#" + element.id : "") : "none"; }())';
+
+// The DOM cases, each {name, run}; EXPECTED_CASE_NAMES lists their names.
 const CASES = [
     {
         name: 'maintenance bar has no drag affordance and sends nothing',
@@ -1100,7 +1251,8 @@ const CASES = [
             assert.ok(dragging.classes.includes('ganttItemDragging'), 'classes: ' + dragging.classes.join(' '));
             assert.equal(typeof await evaluate('window.__lastPointerId'), 'number');
 
-            await evaluate("document.getElementById('window.mainTab.gantt_item_7').releasePointerCapture(window.__lastPointerId)");
+            await evaluate('document.getElementById(' + JSON.stringify(ITEM_ID_PREFIX + 7) + ')'
+                + '.releasePointerCapture(window.__lastPointerId)');
             assert.equal(await evaluate(barExpr(7) + '.hasPointerCapture(window.__lastPointerId)'), false);
             // Moves the held pointer by 1 px, at which the browser dispatches the pending lostpointercapture.
             await move(rect.x + 21, rect.y);
@@ -1316,6 +1468,443 @@ const CASES = [
             await afterDrop(0);
             assertRestored(await barStyle(7), preDrag);
             assert.deepEqual(await evaluate('window.__calls.map(function (call) { return call.eventName; })'), ['refresh']);
+            await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'keyboard: a draggable bar is a named, described button that Tab reaches with a visible focus ring, and other bars '
+            + 'take no focus',
+        run: async () => {
+            const helpExpr = 'document.getElementById(' + JSON.stringify(GANTT_ID + '_moveHelp') + ')';
+            const helpStateExpr = '(function () { var help = ' + helpExpr + ';'
+                + ' if (!help) { return null; }'
+                + ' var computed = getComputedStyle(help);'
+                + ' return {text: help.textContent, className: help.className, parentId: help.parentNode.id,'
+                + ' position: computed.position, width: computed.width, height: computed.height,'
+                + ' overflow: computed.overflow, clip: computed.clip,'
+                + ' count: document.querySelectorAll("#ganttHost .ganttChartVisuallyHidden").length}; }())';
+            const noAttributes = { tabindex: null, role: null, label: null, describedBy: null };
+            await withFocus(async () => {
+                await openBoard('h1', A11Y_OVERRIDES);
+                const attributes = await a11yAttributes(barExpr(7));
+                assert.equal(attributes.tabindex, '0');
+                assert.equal(attributes.role, 'button');
+                assert.equal(attributes.label, 'ORD-7, L1, Start 2026-06-01 09:00:00, End 2026-06-01 10:00:00');
+                assert.equal(attributes.describedBy, GANTT_ID + '_moveHelp');
+                const help = await evaluate(helpStateExpr);
+                assert.deepEqual(help, {
+                    text: KEYBOARD_HELP_30,
+                    className: 'ganttChartVisuallyHidden',
+                    parentId: GANTT_ID,
+                    position: 'absolute',
+                    width: '1px',
+                    height: '1px',
+                    overflow: 'hidden',
+                    clip: 'rect(0px, 0px, 0px, 0px)',
+                    count: 1
+                });
+                assert.deepEqual(await a11yAttributes(MAINTENANCE_BAR_EXPR), noAttributes);
+
+                await evaluate('(function () { if (document.activeElement) { document.activeElement.blur(); }'
+                    + ' return true; }())');
+                const visited = [];
+                let reached = false;
+                for (let i = 0; i < MAX_TAB_PRESSES && !reached; i++) {
+                    await keyPress('Tab');
+                    visited.push(await evaluate(ACTIVE_ELEMENT_EXPR));
+                    reached = await isFocused(barExpr(7));
+                }
+                assert.ok(reached, 'bar 7 not reached by Tab; focus order: ' + visited.join(' > '));
+                assert.deepEqual(await focusStyle(barExpr(7)), {
+                    zIndex: '220',
+                    outlineStyle: 'solid',
+                    outlineWidth: '2px',
+                    outlineColor: 'rgb(0, 0, 0)',
+                    outlineOffset: '-2px',
+                    focusVisible: true
+                });
+                const focused = await barStyle(7);
+                assert.ok(!focused.classes.includes('ganttItemDragging'), 'classes: ' + focused.classes.join(' '));
+                assert.deepEqual(await eventNames(), ['refresh']);
+
+                await evaluate('(function () { var board = window.__boardFor("h1");'
+                    + ' var bar = board.items.filter(function (item) { return item.id === 7; })[0];'
+                    + ' bar.info.name = "&lt;b&gt;ORD&amp;7&lt;/b&gt;"; bar.info.tooltip.header = bar.info.name;'
+                    + ' window.__currentBoard = board; return true; }())');
+                const seqBefore = await evaluate('window.__seq');
+                await evaluate('window.__gantt.performInitialize(); true');
+                await waitFor('window.__seq > ' + seqBefore + ' && window.__lastResponseApplied.eventName === "refresh"');
+                await waitFor(IS_UNBLOCKED_EXPR);
+                const decoded = await a11yAttributes(barExpr(7));
+                assert.equal(decoded.label, '<b>ORD&7</b>, L1, Start 2026-06-01 09:00:00, End 2026-06-01 10:00:00');
+                assert.equal(decoded.describedBy, GANTT_ID + '_moveHelp');
+                assert.equal(await evaluate(barExpr(7) + '.querySelector("b") === null'), true);
+                assert.deepEqual(await evaluate(helpStateExpr), help);
+
+                await openBoard('h6', A11Y_OVERRIDES);
+                assert.deepEqual(await a11yAttributes(barExpr(7)), noAttributes, 'h6 bar 7');
+
+                await openBoard('moveDisabled', A11Y_OVERRIDES);
+                assert.deepEqual(await a11yAttributes(barExpr(7)), noAttributes, 'moveDisabled bar 7');
+                assert.deepEqual(await a11yAttributes(MAINTENANCE_BAR_EXPR), noAttributes, 'moveDisabled maintenance bar');
+                assert.equal(await evaluate(helpExpr + ' === null'), true, 'keyboard help without item moves');
+                assert.equal(await evaluate('document.querySelectorAll("#ganttHost .ganttChartVisuallyHidden,'
+                    + ' #ganttHost .ganttChartLiveRegion").length'), 0);
+            });
+            await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'keyboard: arrow keys move the focused bar in 30-minute steps and whole rows within the board, and Enter sends one '
+            + 'moveItem',
+        run: async () => {
+            // Asserts the left and top of bar 7, its ganttItemDragging class and the text of the status live region.
+            const assertKeyboardTarget = async (left, top, statusText) => {
+                const style = await barStyle(7);
+                assert.equal(style.left, left, 'left for ' + statusText);
+                assert.equal(style.top, top, 'top for ' + statusText);
+                assert.ok(style.classes.includes('ganttItemDragging'), 'classes: ' + style.classes.join(' '));
+                assert.equal(await elementText(STATUS_REGION_EXPR), statusText);
+            };
+            await withFocus(async () => {
+                await openBoard('h1', A11Y_OVERRIDES);
+                const preDrag = await barStyle(7);
+                const preDragLeft = parseFloat(preDrag.left);
+                await focusElement(barExpr(7));
+
+                await keyPresses('ArrowRight', 2);
+                await assertKeyboardTarget((preDragLeft + 2 * GRID_STEP_H1_PX) + 'px', '1px', 'L1 Start 2026-06-01 10:00:00');
+                const tooltip = await waitForVisibleTooltip();
+                assert.ok(tooltip.text.includes('2026-06-01 10:00:00'), 'tooltip text: ' + tooltip.text);
+                assert.ok(tooltip.text.includes('L1'), 'tooltip text: ' + tooltip.text);
+                const tooltipTop = await evaluate('parseFloat(document.querySelector(".ganttChartTooltip").style.top)');
+                assert.ok(Math.abs(tooltipTop - ((await barRect(7)).bottom + 20)) <= 1, 'tooltip top ' + tooltipTop);
+
+                await keyPress('ArrowDown');
+                await assertKeyboardTarget((preDragLeft + 2 * GRID_STEP_H1_PX) + 'px', '31px', 'L2 Start 2026-06-01 10:00:00');
+                await keyPresses('ArrowDown', 2);
+                await assertKeyboardTarget((preDragLeft + 2 * GRID_STEP_H1_PX) + 'px', '61px', 'L3 Start 2026-06-01 10:00:00');
+                await keyPresses('ArrowUp', 3);
+                await assertKeyboardTarget((preDragLeft + 2 * GRID_STEP_H1_PX) + 'px', '1px', 'L1 Start 2026-06-01 10:00:00');
+                await keyPress('ArrowDown');
+                await assertKeyboardTarget((preDragLeft + 2 * GRID_STEP_H1_PX) + 'px', '31px', 'L2 Start 2026-06-01 10:00:00');
+                assert.deepEqual(await eventNames(), ['refresh']);
+
+                await keyPress('Enter');
+                const calls = await afterDrop(1);
+                assert.equal(calls[0].component, GANTT_ID);
+                assert.equal(calls[0].args.length, 1);
+                assert.deepEqual(calls[0].payload, {
+                    itemId: 7,
+                    row: 'L2',
+                    dateFrom: '2026-06-01 10:00:00',
+                    originalRow: 'L1',
+                    originalName: 'ORD-7',
+                    originalDateFrom: '2026-06-01 09:00:00',
+                    originalDateTo: '2026-06-01 10:00:00'
+                });
+                assertRestored(await barStyle(7), preDrag);
+                assert.equal(await isFocused(barExpr(7)), true, 'focus after the rejection');
+                const rejection = await waitForVisibleTooltip();
+                assert.ok(rejection.text.includes('Move rejected'), 'tooltip text: ' + rejection.text);
+                const alertText = await elementText(ALERT_REGION_EXPR);
+                assert.ok(alertText.includes('Move rejected'), 'alert region: ' + alertText);
+                assert.ok(alertText.includes('Rejected by fixture'), 'alert region: ' + alertText);
+                await waitFor(IS_UNBLOCKED_EXPR);
+
+                await keyPress('Escape');
+                assert.equal((await tooltipState()).visible, false, 'rejection tooltip after Escape');
+                assertRestored(await barStyle(7), preDrag);
+
+                await keyPresses('ArrowLeft', 18);
+                await assertKeyboardTarget((preDragLeft - 18 * GRID_STEP_H1_PX) + 'px', '1px', 'L1 Start 2026-06-01 00:00:00');
+                await keyPress('ArrowLeft');
+                await assertKeyboardTarget((preDragLeft - 18 * GRID_STEP_H1_PX) + 'px', '1px', 'L1 Start 2026-06-01 00:00:00');
+                await keyPress('Escape');
+                assertRestored(await barStyle(7), preDrag);
+
+                await keyPresses('ArrowRight', 29);
+                await assertKeyboardTarget((preDragLeft + 29 * GRID_STEP_H1_PX) + 'px', '1px', 'L1 Start 2026-06-01 23:30:00');
+                await keyPress('ArrowRight');
+                await assertKeyboardTarget((preDragLeft + 29 * GRID_STEP_H1_PX) + 'px', '1px', 'L1 Start 2026-06-01 23:30:00');
+                await keyPress('Escape');
+                assertRestored(await barStyle(7), preDrag);
+                await afterDrop(1);
+                assert.deepEqual(await eventNames(), ['refresh', 'moveItem']);
+
+                await evaluate('(function () { var board = window.__boardFor("h1");'
+                    + ' var bar = board.items.filter(function (item) { return item.id === 7; })[0];'
+                    + ' bar.from = -1; bar.to = 0.5;'
+                    + ' bar.info.dateFrom = "2026-05-31 23:00:00"; bar.info.dateTo = "2026-06-01 00:30:00";'
+                    + ' window.__currentBoard = board; return true; }())');
+                const seqBefore = await evaluate('window.__seq');
+                await evaluate('window.__gantt.performInitialize(); true');
+                await waitFor('window.__seq > ' + seqBefore + ' && window.__lastResponseApplied.eventName === "refresh"');
+                await waitFor(IS_UNBLOCKED_EXPR);
+                const early = await barStyle(7);
+                assert.equal(early.left, '-26px');
+                const statusBefore = await elementText(STATUS_REGION_EXPR);
+                await focusElement(barExpr(7));
+                await keyPress('ArrowLeft');
+                const refused = await barStyle(7);
+                assertRestored(refused, early);
+                assert.equal(await elementText(STATUS_REGION_EXPR), statusBefore, 'status after a refused first step');
+                await keyPress('ArrowRight');
+                await assertKeyboardTarget((-26 + GRID_STEP_H1_PX) + 'px', '1px', 'L1 Start 2026-05-31 23:30:00');
+                await keyPress('Escape');
+                assertRestored(await barStyle(7), early);
+                assert.deepEqual(await eventNames(), ['refresh', 'moveItem', 'refresh']);
+
+                await openBoard('offGrid', A11Y_OVERRIDES);
+                const offGrid = await barStyle(8);
+                await focusElement(barExpr(8));
+                await keyPress('ArrowLeft');
+                assert.equal(await elementText(STATUS_REGION_EXPR), 'L1 Start 2026-06-01 09:30:00');
+                await keyPress('Escape');
+                assertRestored(await barStyle(8), offGrid);
+                await keyPress('ArrowRight');
+                assert.equal(await elementText(STATUS_REGION_EXPR), 'L1 Start 2026-06-01 10:30:00');
+                await keyPress('Enter');
+                const offGridCalls = await afterDrop(1);
+                assert.equal(offGridCalls[0].payload.originalDateFrom, '2026-06-01 10:07:00');
+                assert.equal(offGridCalls[0].payload.dateFrom, '2026-06-01 10:30:00');
+                assertRestored(await barStyle(8), offGrid);
+            });
+            await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'keyboard: Escape, blur, a pointer press and an unchanged Enter cancel a keyboard move without a request, and Enter '
+            + 'or Space on an idle bar selects it',
+        run: async () => {
+            const cancelledText = MOVE_A11Y_TRANSLATIONS['move.cancelledAnnouncement'];
+            await withFocus(async () => {
+                await openBoard('h1', A11Y_OVERRIDES);
+                const preDrag = await barStyle(7);
+                // Asserts that bar 7 is back at its pre-drag place, the tooltip is hidden and the status live region
+                // holds the cancellation.
+                const assertCancelled = async (label) => {
+                    assertRestored(await barStyle(7), preDrag);
+                    assert.equal((await tooltipState()).visible, false, 'tooltip after ' + label);
+                    assert.equal(await elementText(STATUS_REGION_EXPR), cancelledText, 'status after ' + label);
+                };
+                await focusElement(barExpr(7));
+
+                await keyPress('ArrowRight');
+                assert.ok((await barStyle(7)).classes.includes('ganttItemDragging'));
+                await waitForVisibleTooltip();
+                assert.equal(await elementText(STATUS_REGION_EXPR), 'L1 Start 2026-06-01 09:30:00');
+                await keyPress('Escape');
+                await assertCancelled('Escape');
+                assert.equal(await isFocused(barExpr(7)), true, 'focus after Escape');
+
+                await keyPress('ArrowRight');
+                assert.ok((await barStyle(7)).classes.includes('ganttItemDragging'));
+                assert.equal(await elementText(STATUS_REGION_EXPR), 'L1 Start 2026-06-01 09:30:00');
+                await keyPress('Tab');
+                assert.equal(await isFocused(barExpr(7)), false, 'focus after Tab');
+                await assertCancelled('blur');
+
+                await focusElement(barExpr(7));
+                await keyPress('ArrowRight');
+                await keyPress('ArrowLeft');
+                assert.equal(await elementText(STATUS_REGION_EXPR), 'L1 Start 2026-06-01 09:00:00');
+                await keyPress('Enter');
+                await assertCancelled('an unchanged Enter');
+                await keyPress('ArrowDown');
+                await keyPress('ArrowUp');
+                assert.equal(await elementText(STATUS_REGION_EXPR), 'L1 Start 2026-06-01 09:00:00');
+                await keyPress('Space');
+                await assertCancelled('an unchanged Space');
+                assert.equal((await selectCalls()).length, 0, 'select calls after the cancels');
+
+                await keyPress('Enter');
+                await afterDrop(0);
+                assert.equal((await selectCalls()).length, 1, 'select calls after Enter');
+                const selected = await barStyle(7);
+                assert.ok(selected.classes.includes('ganttItemSelected'), 'classes: ' + selected.classes.join(' '));
+                assertRestored(selected, preDrag);
+                await keyPress('Space');
+                await afterDrop(0);
+                assert.equal((await selectCalls()).length, 2, 'select calls after Space');
+
+                await keyPress('ArrowRight');
+                assert.equal(await elementText(STATUS_REGION_EXPR), 'L1 Start 2026-06-01 09:30:00');
+                const moved = await barRect(7);
+                const pressPoint = { x: moved.left + 5, y: moved.y };
+                await press(pressPoint.x, pressPoint.y);
+                await assertCancelled('a pointer press');
+                await release(pressPoint.x, pressPoint.y);
+                await afterDrop(0);
+                assertRestored(await barStyle(7), preDrag);
+                assert.equal((await selectCalls()).length, 3, 'select calls after the pointer click');
+                assert.deepEqual(await eventNames(), ['refresh', 'select', 'select', 'select']);
+            });
+            await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'keyboard: an accepted keyboard move announces the saved move and moves the focus to the rebuilt bar',
+        run: async () => {
+            await withFocus(async () => {
+                await openBoard('h1', A11Y_OVERRIDES);
+                await evaluate('(function () { var board = window.__boardFor("h1");'
+                    + ' var bar = board.items.filter(function (item) { return item.id === 7; })[0];'
+                    + ' bar.row = "L2"; bar.from = 10; bar.to = 11;'
+                    + ' bar.info.dateFrom = "2026-06-01 10:00:00"; bar.info.dateTo = "2026-06-01 11:00:00";'
+                    + ' window.__nextMoveResponse = {kind: "accepted", board: board};'
+                    + ' ' + barExpr(7) + '.__renderedBeforeMove = true; return true; }())');
+                await focusElement(barExpr(7));
+                await keyPresses('ArrowRight', 2);
+                await keyPress('ArrowDown');
+                assert.equal(await elementText(STATUS_REGION_EXPR), 'L2 Start 2026-06-01 10:00:00');
+
+                await keyPress('Enter');
+                const calls = await afterDrop(1);
+                assert.equal(calls[0].payload.itemId, 7);
+                assert.equal(calls[0].payload.row, 'L2');
+                assert.equal(calls[0].payload.dateFrom, '2026-06-01 10:00:00');
+                await waitFor(IS_UNBLOCKED_EXPR);
+
+                const rebuilt = await evaluate('(function () { var bar = ' + barExpr(7) + ';'
+                    + ' var rows = document.querySelectorAll(".rowsContainer .ganttRowElement");'
+                    + ' return {rebuilt: bar.__renderedBeforeMove !== true, inSecondRow: bar.parentNode === rows[1],'
+                    + ' left: bar.style.left, top: bar.style.top, focused: document.activeElement === bar,'
+                    + ' focusVisible: bar.matches(":focus-visible"), tabindex: bar.getAttribute("tabindex"),'
+                    + ' label: bar.getAttribute("aria-label")}; }())');
+                assert.deepEqual(rebuilt, {
+                    rebuilt: true,
+                    inSecondRow: true,
+                    left: '249px',
+                    top: '1px',
+                    focused: true,
+                    focusVisible: true,
+                    tabindex: '0',
+                    label: 'ORD-7, L2, Start 2026-06-01 10:00:00, End 2026-06-01 11:00:00'
+                });
+                assert.equal(await elementText(STATUS_REGION_EXPR), MOVE_A11Y_TRANSLATIONS['move.acceptedAnnouncement']);
+                assert.equal(await elementText(ALERT_REGION_EXPR), '');
+                assert.equal((await tooltipState()).visible, false);
+                assert.ok(!(await barStyle(7)).classes.includes('ganttItemDragging'));
+                await sleep(300);
+                assert.deepEqual(await eventNames(), ['refresh', 'moveItem']);
+                assert.equal(await isFocused(barExpr(7)), true, 'focus 300 ms after the answer');
+            });
+            await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'pointer: an accepted drop announces the saved move, and a drag ended by pointercancel or by a drop outside the '
+            + 'pane announces the cancellation',
+        run: async () => {
+            const acceptedText = MOVE_A11Y_TRANSLATIONS['move.acceptedAnnouncement'];
+            const cancelledText = MOVE_A11Y_TRANSLATIONS['move.cancelledAnnouncement'];
+            await openBoard('h1', A11Y_OVERRIDES);
+            await evaluate('(function () { var board = window.__boardFor("h1");'
+                + ' var bar = board.items.filter(function (item) { return item.id === 7; })[0];'
+                + ' bar.row = "L2"; bar.from = 10.5; bar.to = 11.5;'
+                + ' bar.info.dateFrom = "2026-06-01 10:30:00"; bar.info.dateTo = "2026-06-01 11:30:00";'
+                + ' window.__nextMoveResponse = {kind: "accepted", board: board, hold: true}; return true; }())');
+            const original = await barRect(7);
+            const drop = await drag(original, [[10, 10], [25, 20], [40, ROW_HEIGHT_PX]], { release: false });
+            assert.equal(await elementText(STATUS_REGION_EXPR), 'L2 Start 2026-06-01 10:30:00');
+            await release(drop.x, drop.y);
+            await waitFor('window.__calls.filter(function (call) { return call.eventName === "moveItem"; }).length === 1');
+            assert.equal(await elementText(STATUS_REGION_EXPR), '', 'status while the move is pending');
+            assert.equal(await evaluate('window.__releaseHeldMove()'), true);
+            await afterDrop(1);
+            await waitFor(IS_UNBLOCKED_EXPR);
+            assert.equal(await elementText(STATUS_REGION_EXPR), acceptedText);
+            assert.equal(await isFocused(barExpr(7)), false, 'focus after the accepted pointer drop');
+
+            const preDrag = await barStyle(7);
+            const rect = await barRect(7);
+            await hover(PARK_POINT.x, PARK_POINT.y);
+            await withTouch(async () => {
+                await touchStart(rect.x, rect.y);
+                await touchCancel();
+            });
+            assertRestored(await barStyle(7), preDrag);
+            assert.equal(await elementText(STATUS_REGION_EXPR), acceptedText, 'status after a cancelled pending press');
+
+            await withTouch(async () => {
+                await touchStart(rect.x, rect.y);
+                await touchMove(rect.x + 20, rect.y);
+                assert.equal(await elementText(STATUS_REGION_EXPR), 'L2 Start 2026-06-01 11:30:00');
+                await touchCancel();
+            });
+            assertRestored(await barStyle(7), preDrag);
+            assert.equal(await elementText(STATUS_REGION_EXPR), cancelledText, 'status after pointercancel');
+
+            const wrapper = await wrapperRect();
+            const namesDx = wrapper.left - 20 - rect.x;
+            const outside = await drag(rect, [[-10, 0], [Math.round(namesDx / 2), 0], [namesDx, 0]], { release: false });
+            assert.notEqual(await elementText(STATUS_REGION_EXPR), cancelledText, 'status during the drag');
+            await release(outside.x, outside.y);
+            assertRestored(await barStyle(7), preDrag);
+            assert.equal(await elementText(STATUS_REGION_EXPR), cancelledText, 'status after the drop outside the pane');
+            await afterDrop(1);
+            assert.deepEqual(await eventNames(), ['refresh', 'moveItem']);
+            await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'a selected covered bar at z-index 220 rises to the drag layer (230) and stays topmost while dragged by pointer or '
+            + 'moved by keyboard, and so does a focused bar',
+        run: async () => {
+            // Returns the computed z-index of the Gantt item with an id.
+            const zIndex = (id) => evaluate('getComputedStyle(' + barExpr(id) + ').zIndex');
+            // Asserts that the Gantt item with an id has the ganttItemDragging class and every other given class, computes
+            // z-index 230 and is the element at the centre of its rectangle.
+            const assertOnDragLayer = async (id, classes, label) => {
+                const style = await barStyle(id);
+                for (const name of ['ganttItemDragging'].concat(classes)) {
+                    assert.ok(style.classes.includes(name), label + ' classes: ' + style.classes.join(' '));
+                }
+                assert.equal(await zIndex(id), '230', label + ' z-index');
+                assert.equal(await isTopmostAt(barExpr(id), await barRect(id)), true, label + ' topmost at its centre');
+            };
+            await withFocus(async () => {
+                await openBoard('covered', A11Y_OVERRIDES);
+                const collisionRect = await elementRect("document.querySelector('.ganttCollisionItem')");
+                await click(collisionRect.x, collisionRect.y);
+                await waitFor(OVERLAY_VISIBLE_EXPR);
+                const entryRect = await elementRect('document.getElementById('
+                    + JSON.stringify(COLLISION_ENTRY_ID_PREFIX + 12) + ')');
+                await click(entryRect.x, entryRect.y);
+                await waitFor('!' + OVERLAY_VISIBLE_EXPR);
+                const preDrag = await barStyle(12);
+                assert.ok(preDrag.classes.includes('ganttItemSelected'), 'classes: ' + preDrag.classes.join(' '));
+                assert.equal(await zIndex(12), '220', 'selected bar z-index');
+
+                const rect = await barRect(12);
+                await press(rect.x, rect.y);
+                await move(rect.x + 13, rect.y);
+                await assertOnDragLayer(12, ['ganttItemSelected'], 'pointer-dragged selected bar');
+                await move(rect.x, rect.y);
+                await release(rect.x, rect.y);
+                await afterDrop(0);
+                assertRestored(await barStyle(12), preDrag);
+                assert.equal(await zIndex(12), '220', 'selected bar z-index after the release');
+
+                await focusElement(barExpr(12));
+                assert.equal(await zIndex(12), '220', 'focused selected bar z-index');
+                await keyPress('ArrowRight');
+                await assertOnDragLayer(12, ['ganttItemSelected'], 'keyboard-moved selected bar');
+                await keyPress('Escape');
+                assertRestored(await barStyle(12), preDrag);
+                assert.equal(await zIndex(12), '220', 'selected bar z-index after Escape');
+
+                const coveringPreDrag = await barStyle(11);
+                assert.ok(!coveringPreDrag.classes.includes('ganttItemSelected'));
+                await focusElement(barExpr(11));
+                assert.equal(await zIndex(11), '220', 'focused bar z-index');
+                await keyPress('ArrowRight');
+                await assertOnDragLayer(11, [], 'keyboard-moved focused bar');
+                await keyPress('Escape');
+                assertRestored(await barStyle(11), coveringPreDrag);
+                await afterDrop(0);
+            });
             await assertNoPageErrors();
         }
     },
@@ -1774,6 +2363,126 @@ const CASES = [
             await assertNoPageErrors();
         }
 
+    },
+    {
+        name: 'a malformed HTTP 200 moveItem reply snaps back through the transport error path',
+        run: async () => {
+            await openBoard('h1');
+            await setNextMoveResponse({ kind: 'httpReply', status: 200, body: 'not-json' });
+            const preDrag = await barStyle(7);
+            const rect = await barRect(7);
+
+            await drag(rect, horizontalSteps(10, 40));
+            const calls = await afterDrop(1);
+            await waitFor('(function () { var bar = ' + barExpr(7) + ';'
+                + ' return bar.style.left === ' + JSON.stringify(preDrag.left)
+                + ' && bar.style.top === ' + JSON.stringify(preDrag.top)
+                + ' && !bar.classList.contains("ganttItemDragging") && ' + IS_UNBLOCKED_EXPR + '; }())');
+            assertRestored(await barStyle(7), preDrag);
+            assert.equal(await isUnblocked(), true);
+
+            const requests = await evaluate('window.__httpRequests');
+            assert.equal(requests.length, 1, 'HTTP requests: ' + JSON.stringify(requests));
+            assert.equal(requests[0].method, 'POST');
+            assert.equal(requests[0].url, '/page/cmmsMachineParts/productionMaintenanceGantt.html');
+            assert.equal(requests[0].async, true);
+            assert.equal(requests[0].headers['Content-Type'], 'application/json; charset=utf-8');
+            const requestBody = JSON.parse(requests[0].body);
+            assert.equal(requestBody.event.name, 'moveItem');
+            assert.deepEqual(requestBody.event.args, calls[0].args);
+            assert.deepEqual(await evaluate('window.__messages'),
+                [{ type: 'failure', content: 'connection error: parsererror' }]);
+            assert.deepEqual(await evaluate('window.__headerButtonCalls'), ['block', 'unblock']);
+            await assertNoPageErrors();
+
+            // A null next response answers the next moveItem with the fixture's default response.
+            await setNextMoveResponse(null);
+            await drag(await barRect(7), horizontalSteps(10, 40));
+            const nextCalls = await afterDrop(2);
+            assert.equal(nextCalls[1].payload.itemId, 7);
+            await waitFor(IS_UNBLOCKED_EXPR);
+            assert.equal((await evaluate('window.__httpRequests')).length, 1);
+            await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'a committed move whose chart cannot be refreshed answers with the error page: the bar returns, the '
+            + 'error is shown and no second refresh is sent',
+        run: async () => {
+            // Message of the framework error page, as QCDConnector.showErrorMessage passes it to showMessage.
+            const errorPageMessage = {
+                title: 'An error occurred in the system',
+                content: 'An error has occurred in the system. Please contact us or, if you are using the OS version, '
+                    + 'see the logs.',
+                type: 'failure'
+            };
+            await openBoard('h1');
+            await setNextMoveResponse({ kind: 'serverError' });
+            const preDrag = await barStyle(7);
+            const rect = await barRect(7);
+
+            await drag(rect, horizontalSteps(10, 40));
+            const calls = await afterDrop(1);
+            assert.equal(calls[0].payload.itemId, 7);
+            assert.equal(calls[0].payload.dateFrom, '2026-06-01 10:30:00');
+            await waitFor('(function () { var bar = ' + barExpr(7) + ';'
+                + ' return bar.style.left === ' + JSON.stringify(preDrag.left)
+                + ' && bar.style.top === ' + JSON.stringify(preDrag.top)
+                + ' && !bar.classList.contains("ganttItemDragging") && ' + IS_UNBLOCKED_EXPR + '; }())');
+            assertRestored(await barStyle(7), preDrag);
+            assert.deepEqual(await evaluate('window.__messages'), [errorPageMessage]);
+            assert.equal((await tooltipState()).visible, false);
+
+            await sleep(500);
+            assert.deepEqual(await evaluate('window.__calls.map(function (call) { return call.eventName; })'),
+                ['refresh', 'moveItem']);
+            assert.deepEqual(await evaluate('window.__messages'), [errorPageMessage]);
+            assert.equal(await isUnblocked(), true);
+            await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'an accepted moveResult without a chart restores the bar and leaves the chart and its header unchanged',
+        run: async () => {
+            const headerParametersExpr = 'window.__gantt.getComponentValue().headerParameters';
+            const rowNames = async () => (await rowRects()).map((row) => row.name);
+            await openBoard('h1');
+            await setNextMoveResponse({ kind: 'acceptedWithoutBoard' });
+            const headerBefore = await evaluate(headerParametersExpr);
+            assert.equal(headerBefore.scale, 'H1');
+            assert.ok(typeof headerBefore.dateFrom === 'string' && headerBefore.dateFrom.length > 0,
+                'header dateFrom: ' + JSON.stringify(headerBefore.dateFrom));
+            assert.ok(typeof headerBefore.dateTo === 'string' && headerBefore.dateTo.length > 0,
+                'header dateTo: ' + JSON.stringify(headerBefore.dateTo));
+            const rowsBefore = await rowNames();
+            assert.deepEqual(rowsBefore, ['L1', 'L2', 'L3']);
+            // Marks the rendered element of bar 7, which a rebuilt chart replaces.
+            await evaluate(barExpr(7) + '.__renderedBeforeMove = true; true');
+            const preDrag = await barStyle(7);
+            const rect = await barRect(7);
+
+            await drag(rect, horizontalSteps(10, 40));
+            const calls = await afterDrop(1);
+            assert.equal(calls[0].payload.itemId, 7);
+            assert.equal(calls[0].payload.dateFrom, '2026-06-01 10:30:00');
+            await waitFor('(function () { var bar = ' + barExpr(7) + ';'
+                + ' return bar.style.left === ' + JSON.stringify(preDrag.left)
+                + ' && bar.style.top === ' + JSON.stringify(preDrag.top)
+                + ' && !bar.classList.contains("ganttItemDragging") && ' + IS_UNBLOCKED_EXPR + '; }())');
+            assertRestored(await barStyle(7), preDrag);
+            assert.equal(await evaluate(barExpr(7) + '.__renderedBeforeMove === true'), true, 'bar 7 re-rendered');
+            assert.deepEqual(await evaluate(headerParametersExpr), headerBefore);
+            assert.deepEqual(await rowNames(), rowsBefore);
+            assert.equal((await tooltipState()).visible, false);
+            assert.deepEqual(await evaluate('window.__messages'), []);
+
+            await sleep(500);
+            assert.deepEqual(await evaluate('window.__calls.map(function (call) { return call.eventName; })'),
+                ['refresh', 'moveItem']);
+            assert.deepEqual(await evaluate('window.__messages'), []);
+            assert.equal(await isUnblocked(), true);
+            await assertNoPageErrors();
+        }
     }
 ];
 

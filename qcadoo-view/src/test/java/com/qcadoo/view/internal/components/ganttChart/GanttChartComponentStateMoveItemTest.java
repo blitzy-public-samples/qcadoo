@@ -92,8 +92,9 @@ import com.qcadoo.view.internal.hooks.ViewEventListenerHook;
  * Tests of the {@code moveItem} event of {@link GanttChartComponentState}: its registration next to the existing events, the
  * framework checks of a drop and their rejection reasons, the mutation of the dropped item through
  * {@link GanttChartModifiableItem}, the {@link GanttChartMoveRequest} exposed to listeners, {@code acceptMove} and
- * {@code rejectMove}, the rendered {@code moveResult}, and the move results rendered when the handler, a listener, the
- * refresh of an accepted move or its chart rendering fails.
+ * {@code rejectMove}, the rendered {@code moveResult}, the move results rendered when the handler or a listener fails, and
+ * the exceptions {@code acceptMove} and {@code render} throw when the refresh of an accepted move or its chart rendering
+ * fails.
  * <p>
  * Every test runs with UTC as the default JVM and Joda-Time zone unless it switches to {@code Europe/Warsaw}; both defaults
  * are restored after each test.
@@ -184,10 +185,6 @@ public class GanttChartComponentStateMoveItemTest {
     private static final String WARSAW = "Europe/Warsaw";
 
     private static final String UTC = "UTC";
-
-    private static final String RELOAD_REQUIRED = "reloadRequired";
-
-    private static final String RELOAD_REQUIRED_MESSAGE = "qcadooView.gantt.move.reloadRequired";
 
     private static final String INTERNAL_ERROR_MESSAGE = "qcadooView.errorPage.error.internalError.explanation";
 
@@ -1029,70 +1026,71 @@ public class GanttChartComponentStateMoveItemTest {
     }
 
     /**
-     * When the refresh of acceptMove fails with a runtime exception, acceptMove throws nothing and never resolves again: the
-     * content is only an accepted moveResult for the moved item with reloadRequired set to true and the reload-required
-     * message, and the component carries no message and reports no error.
+     * When the refresh of acceptMove fails with a runtime exception, acceptMove rethrows that same exception and the resolver
+     * runs exactly twice (the built-in handler and the refresh); render then throws an {@link IllegalStateException} whose
+     * message names item 7 and does not carry the resolver exception's message.
      */
     @Test
-    public final void shouldAnswerAcceptedMoveRequiringReloadWhenRefreshFailsAfterAccept() throws Exception {
+    public final void shouldRethrowRefreshFailureAndFailRenderWhenRefreshFailsAfterAccept() throws Exception {
         // given
         GanttChartComponentState state = createDefaultState();
         move(state, validPayload());
-        doThrow(new IllegalStateException(EXCEPTION_DETAIL)).when(resolver).resolve(any(GanttChartScale.class),
-                any(JSONObject.class), any(Locale.class));
+        IllegalStateException refreshFailure = new IllegalStateException(EXCEPTION_DETAIL);
+        doThrow(refreshFailure).when(resolver).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
 
         // when
-        state.acceptMove();
+        RuntimeException thrown = null;
+        try {
+            state.acceptMove();
+        } catch (RuntimeException e) {
+            thrown = e;
+        }
 
         // then
-        JSONObject rendered = state.render();
-        JSONObject content = rendered.getJSONObject("content");
-        assertEquals(Collections.singleton(MOVE_RESULT), keySet(content));
-        assertAcceptedRequiringReload(content.getJSONObject(MOVE_RESULT));
-        assertNoMessages(rendered);
-        assertFalse(state.isHasError());
-        assertFalse(rendered.toString().contains(EXCEPTION_DETAIL));
+        assertSame(refreshFailure, thrown);
         verify(resolver, times(2)).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+
+        IllegalStateException renderFailure = renderIllegalStateFailure(state);
+        assertNotNull(renderFailure);
+        assertTrue(renderFailure.getMessage(), renderFailure.getMessage().contains("item " + MOVED_ITEM_ID + " "));
+        assertFalse(renderFailure.getMessage().contains(EXCEPTION_DETAIL));
     }
 
     /**
-     * When the refreshed chart of an accepted move fails to render, the content is only an accepted moveResult with
-     * reloadRequired set to true and the reload-required message, the component carries no message, and a second render
-     * gives the same content.
+     * When the refreshed chart of an accepted move holds an item that cannot be written as JSON, acceptMove returns normally
+     * and render throws that item's {@link JSONException}.
      */
     @Test
-    public final void shouldAnswerAcceptedMoveRequiringReloadWhenAcceptedChartFailsToRender() throws Exception {
+    public final void shouldRethrowUnrenderableItemFailureWhenAcceptedChartFailsToRender() throws Exception {
         // given
         GanttChartComponentState state = createDefaultState();
         move(state, validPayload());
         GanttChartItem unrenderableItem = mock(GanttChartItem.class);
-        when(unrenderableItem.getAsJson()).thenThrow(new JSONException(EXCEPTION_DETAIL));
+        JSONException itemFailure = new JSONException(EXCEPTION_DETAIL);
+        when(unrenderableItem.getAsJson()).thenThrow(itemFailure);
         stubResolverWith(boardWithOriginRowItem(unrenderableItem));
         state.acceptMove();
 
         // when
-        JSONObject rendered = state.render();
-        JSONObject renderedAgain = state.render();
+        JSONException thrown = null;
+        try {
+            state.render();
+        } catch (JSONException e) {
+            thrown = e;
+        }
 
         // then
-        JSONObject content = rendered.getJSONObject("content");
-        assertEquals(Collections.singleton(MOVE_RESULT), keySet(content));
-        assertAcceptedRequiringReload(content.getJSONObject(MOVE_RESULT));
-        assertNoMessages(rendered);
-        assertFalse(rendered.toString().contains(EXCEPTION_DETAIL));
-
-        JSONObject contentAgain = renderedAgain.getJSONObject("content");
-        assertEquals(Collections.singleton(MOVE_RESULT), keySet(contentAgain));
-        assertAcceptedRequiringReload(contentAgain.getJSONObject(MOVE_RESULT));
+        assertSame(itemFailure, thrown);
+        verify(unrenderableItem, times(1)).getAsJson();
     }
 
     /**
-     * A moveItem listener that accepts the move while the refresh fails leaves the event without an exception and without a
-     * message on the view or the component: the content is only an accepted moveResult with reloadRequired set to true and
-     * the reload-required message.
+     * A moveItem listener that accepts the move while the refresh fails leaves the event without an exception: the view
+     * receives the internal-error failure message, and render throws an {@link IllegalStateException} whose message names
+     * item 7 and does not carry the resolver exception's message.
      */
     @Test
-    public final void shouldAnswerAcceptedMoveRequiringReloadWhenListenerAcceptsAndRefreshFails() throws Exception {
+    public final void shouldAddInternalErrorAndFailRenderWhenListenerAcceptsAndRefreshFails() throws Exception {
         // given
         GanttChartComponentState state = createDefaultState();
         registerMoveListener(state, new MoveListenerAction() {
@@ -1111,20 +1109,20 @@ public class GanttChartComponentStateMoveItemTest {
         state.performEvent(view, MOVE_ITEM, validPayload());
 
         // then
-        JSONObject rendered = state.render();
-        JSONObject content = rendered.getJSONObject("content");
-        assertEquals(Collections.singleton(MOVE_RESULT), keySet(content));
-        assertAcceptedRequiringReload(content.getJSONObject(MOVE_RESULT));
-        assertNoMessages(rendered);
-        verify(view, never()).addMessage(anyString(), any(MessageType.class), Matchers.<String> anyVararg());
+        verify(view).addMessage(INTERNAL_ERROR_MESSAGE, MessageType.FAILURE);
+
+        IllegalStateException renderFailure = renderIllegalStateFailure(state);
+        assertNotNull(renderFailure);
+        assertTrue(renderFailure.getMessage(), renderFailure.getMessage().contains("item " + MOVED_ITEM_ID + " "));
+        assertFalse(renderFailure.getMessage().contains(EXCEPTION_DETAIL));
     }
 
     /**
      * A moveItem listener that accepts the move with a working refresh renders, in the same event, the refreshed rows,
-     * items and collisions together with an accepted moveResult that has only the keys itemId and accepted, and no message.
+     * items and collisions together with an accepted moveResult that has exactly the keys itemId and accepted.
      */
     @Test
-    public final void shouldRenderRefreshedChartWithoutReloadRequiredWhenListenerAccepts() throws Exception {
+    public final void shouldRenderRefreshedChartWithAcceptedMoveResultWhenListenerAccepts() throws Exception {
         // given
         GanttChartComponentState state = createDefaultState();
         registerMoveListener(state, new MoveListenerAction() {
@@ -1176,15 +1174,15 @@ public class GanttChartComponentStateMoveItemTest {
     }
 
     /**
-     * Asserts an accepted move result for item 7 with exactly the keys itemId, accepted, reloadRequired and message, the
-     * message being the reload-required translation.
+     * Renders the state and returns the {@link IllegalStateException} that render throws, or null when render returns.
      */
-    private void assertAcceptedRequiringReload(final JSONObject result) throws JSONException {
-        assertEquals(new HashSet<String>(Arrays.asList(ITEM_ID, ACCEPTED, RELOAD_REQUIRED, MESSAGE)), keySet(result));
-        assertTrue(result.getBoolean(ACCEPTED));
-        assertTrue(result.getBoolean(RELOAD_REQUIRED));
-        assertEquals(RELOAD_REQUIRED_MESSAGE, result.getString(MESSAGE));
-        assertEquals(7L, result.getLong(ITEM_ID));
+    private IllegalStateException renderIllegalStateFailure(final GanttChartComponentState state) throws JSONException {
+        try {
+            state.render();
+        } catch (IllegalStateException e) {
+            return e;
+        }
+        return null;
     }
 
     /** Asserts that the rendered component carries an empty message list. */

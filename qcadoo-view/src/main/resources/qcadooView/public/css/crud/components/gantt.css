@@ -306,3 +306,26 @@
 	opacity: 0.8;
 	-moz-opacity: 0.8;
 }
+.ganttItem.ganttItemDraggable:focus {
+	z-index: 220;
+	outline: 2px solid #000000;
+	outline-offset: -2px;
+}
+.ganttItem.ganttItemDraggable:focus:not(:focus-visible) {
+	outline: none;
+}
+.ganttItem.ganttItemDraggable.ganttItemDragging {
+	z-index: 230;
+}
+.ganttChartVisuallyHidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	border: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+	pointer-events: none;
+}
