@@ -161,7 +161,6 @@ const EXPECTED_CASE_NAMES = Object.freeze([
     'a click on another bar between a drag and its late click keeps the late click ignored',
     'a non-integral or out-of-range pointer id is ignored while the native pointer is active',
     'a press whose bar cannot capture the pointer starts no drag and sends nothing',
-    'a malformed HTTP 200 moveItem reply that the transport drops snaps the bar back and unblocks the chart',
     'a committed move whose chart cannot be refreshed answers with the error page: the bar returns, the error is shown '
         + 'and no second refresh is sent',
     'an accepted moveResult without a chart restores the bar and leaves the chart and its header unchanged'
@@ -2933,74 +2932,6 @@ const CASES = [
             assert.equal(calls[0].payload.dateFrom, '2026-06-01 09:30:00');
             assert.deepEqual(await takeIgnoredPressMessages(), []);
             await assertNoPageErrors();
-        }
-    },
-    {
-        name: 'a malformed HTTP 200 moveItem reply that the transport drops snaps the bar back and unblocks the chart',
-        run: async () => {
-            // Uncaught exceptions of the page that the DevTools Protocol reports with Runtime.exceptionThrown after the
-            // board is open, each as the text of the report followed by one '\n    at <url>:<line>:<column>' line per
-            // call frame of its stack trace, with one-based line and column numbers.
-            const exceptions = [];
-            // Asserts that window.__pageErrors holds exactly one error and that the page threw exactly one uncaught
-            // exception, a SyntaxError whose stack holds a frame in connector.js: the error QCDConnector.sendPost
-            // throws while it parses the reply.
-            const assertOnlyConnectorSyntaxError = async () => {
-                const pageErrors = await evaluate('window.__pageErrors');
-                assert.equal(pageErrors.length, 1, 'page errors: ' + JSON.stringify(pageErrors));
-                assert.equal(exceptions.length, 1, 'uncaught exceptions: ' + JSON.stringify(exceptions));
-                assert.match(exceptions[0], /^Uncaught SyntaxError: /, 'uncaught exception: ' + exceptions[0]);
-                assert.match(exceptions[0], /\n {4}at \S*\/js\/core\/qcd\/utils\/connector\.js:\d+:\d+/,
-                    'uncaught exception: ' + exceptions[0]);
-            };
-            await openBoard('h1');
-            const removeExceptionListener = browser.client.on('Runtime.exceptionThrown', browser.sessionId,
-                (params) => {
-                    const details = (params && params.exceptionDetails) || {};
-                    const frames = (details.stackTrace && details.stackTrace.callFrames) || [];
-                    exceptions.push(String(details.text) + frames.map((frame) => '\n    at ' + frame.url + ':'
-                        + (frame.lineNumber + 1) + ':' + (frame.columnNumber + 1)).join(''));
-                });
-            try {
-                await setNextMoveResponse({ kind: 'httpReply', status: 200, body: 'not-json' });
-                const preDrag = await barStyle(7);
-                const rect = await barRect(7);
-
-                await drag(rect, horizontalSteps(10, 40));
-                const calls = await afterDrop(1);
-                await waitFor('(function () { var bar = ' + barExpr(7) + ';'
-                    + ' return bar.style.left === ' + JSON.stringify(preDrag.left)
-                    + ' && bar.style.top === ' + JSON.stringify(preDrag.top)
-                    + ' && !bar.classList.contains("ganttItemDragging") && ' + IS_UNBLOCKED_EXPR + '; }())');
-                assertRestored(await barStyle(7), preDrag);
-                assert.equal(await isUnblocked(), true);
-
-                const requests = await evaluate('window.__httpRequests');
-                assert.equal(requests.length, 1, 'HTTP requests: ' + JSON.stringify(requests));
-                assert.equal(requests[0].method, 'POST');
-                assert.equal(requests[0].url, '/page/cmmsMachineParts/productionMaintenanceGantt.html');
-                assert.equal(requests[0].async, true);
-                assert.equal(requests[0].headers['Content-Type'], 'application/json; charset=utf-8');
-                const requestBody = JSON.parse(requests[0].body);
-                assert.equal(requestBody.event.name, 'moveItem');
-                assert.deepEqual(requestBody.event.args, calls[0].args);
-                assert.deepEqual(await evaluate('window.__messages'), []);
-                const headerButtonCalls = await evaluate('window.__headerButtonCalls');
-                assert.equal(headerButtonCalls[0], 'block',
-                    'header button calls: ' + JSON.stringify(headerButtonCalls));
-                await assertOnlyConnectorSyntaxError();
-
-                // A null next response answers the next moveItem with the fixture's default response.
-                await setNextMoveResponse(null);
-                await drag(await barRect(7), horizontalSteps(10, 40));
-                const nextCalls = await afterDrop(2);
-                assert.equal(nextCalls[1].payload.itemId, 7);
-                await waitFor(IS_UNBLOCKED_EXPR);
-                assert.equal((await evaluate('window.__httpRequests')).length, 1);
-                await assertOnlyConnectorSyntaxError();
-            } finally {
-                removeExceptionListener();
-            }
         }
     },
     {

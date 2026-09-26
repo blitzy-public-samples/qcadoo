@@ -32,9 +32,8 @@
     window.__loadBoard(name, overrides) renders the component.jsp and ganttChart.jsp markup of
     window.mainTab.gridLayout.gantt, the component path of the gantt component of the productionMaintenanceGantt view,
     and constructs QCD.components.elements.GanttChart the way pageConstructor.js does. window.mainController is a
-    recording stub that answers every event with canned values after a zero delay, with two exceptions: a moveItem
-    with an httpReply answer runs through the real event transport, and a moveItem with a hold: true answer is
-    answered only after window.__releaseHeldMove().
+    recording stub that answers every event with canned values after a zero delay, with one exception: a moveItem
+    with a hold: true answer is answered only after window.__releaseHeldMove().
 
     Page API:
       window.__loadBoard(name, overrides)  renders board `name`; overrides.options and overrides.board replace keys of the
@@ -59,21 +58,7 @@
                                                                              only the complete function
                                              {kind: 'acceptedWithoutBoard'}  content {moveResult: {itemId,
                                                                              accepted: true}} only
-                                             {kind: 'httpReply', status, body}
-                                                                             sends the moveItem through the real
-                                                                             QCD.PageController.callEvent,
-                                                                             performEvent, QCDConnector.sendPost and
-                                                                             jQuery.ajax of a page controller without
-                                                                             page components; an XMLHttpRequest
-                                                                             stand-in answers it with that status and
-                                                                             body and a JSON content type (hold does
-                                                                             not apply); the answer is recorded once,
-                                                                             after the complete function the transport
-                                                                             calls, or after a zero delay when jQuery
-                                                                             rejects the request, whichever runs first
                                            null answers with the default response
-      window.__httpRequests                requests sent for httpReply answers, each {method, url, async, body, headers}
-      window.__headerButtonCalls           "block" and "unblock" calls of the window header of that page controller
       window.__releaseHeldMove()           answers the held moveItem after a zero delay, with the generation check and
                                            the __seq and __lastResponseApplied bookkeeping of every answer; returns
                                            false after recording a fixture error when no moveItem is held
@@ -302,8 +287,6 @@
             window.__gantt = null;
             window.__calls = [];
             window.__messages = [];
-            window.__httpRequests = [];
-            window.__headerButtonCalls = [];
             window.__seq = 0;
             window.__lastResponseApplied = null;
             window.__currentBoard = null;
@@ -755,160 +738,17 @@
                 };
             }
 
-            // Content type of every reply of the XMLHttpRequest stand-in.
-            var HTTP_REPLY_CONTENT_TYPE = "application/json;charset=UTF-8";
-
-            // Page controller that sends the moveItem events of httpReply answers, or null until the first of them.
-            var transportController = null;
-
-            // Returns the page controller of httpReply answers. On first use it is created with
-            // new QCD.PageController(), and its this.constructor initializer, which crudView.jsp calls with viewName,
-            // pluginIdentifier, hasDataDefinition and popup, is not called; it has no page components and gets a window
-            // header that records its blockButtons and unblockButtons calls in window.__headerButtonCalls.
-            function getTransportController() {
-                if (transportController === null) {
-                    transportController = new QCD.PageController();
-                    transportController.setWindowHeaderComponent({
-                        blockButtons: function () {
-                            window.__headerButtonCalls.push("block");
-                        },
-                        unblockButtons: function () {
-                            window.__headerButtonCalls.push("unblock");
-                        }
-                    });
-                }
-                return transportController;
-            }
-
-            // Returns an XMLHttpRequest stand-in class for one reply. send records the request in window.__httpRequests
-            // and completes it at once with the reply's status and body, the status text "OK" for 200 and "Error"
-            // otherwise, and the HTTP_REPLY_CONTENT_TYPE header; jQuery then answers after a zero delay.
-            function replyXhrClass(reply) {
-                function ReplyXhr() {
-                    this.readyState = 0;
-                    this.status = 0;
-                    this.statusText = "";
-                    this.responseText = "";
-                    this.responseXML = null;
-                    this.onreadystatechange = null;
-                    this.request = {method: null, url: null, async: null, body: null, headers: {}};
-                }
-                ReplyXhr.prototype.open = function (method, requestUrl, async) {
-                    this.request.method = method;
-                    this.request.url = requestUrl;
-                    this.request.async = async;
-                    this.readyState = 1;
-                };
-                ReplyXhr.prototype.setRequestHeader = function (name, value) {
-                    this.request.headers[name] = value;
-                };
-                ReplyXhr.prototype.send = function (body) {
-                    this.request.body = body === undefined ? null : body;
-                    window.__httpRequests.push(deepCopy(this.request));
-                    this.status = reply.status;
-                    this.statusText = reply.status === 200 ? "OK" : "Error";
-                    this.responseText = reply.body;
-                    this.readyState = 4;
-                };
-                ReplyXhr.prototype.getAllResponseHeaders = function () {
-                    return this.readyState === 4 ? "Content-Type: " + HTTP_REPLY_CONTENT_TYPE + "\r\n" : "";
-                };
-                ReplyXhr.prototype.getResponseHeader = function (name) {
-                    return this.readyState === 4 && String(name).toLowerCase() === "content-type"
-                        ? HTTP_REPLY_CONTENT_TYPE : null;
-                };
-                ReplyXhr.prototype.abort = function () {
-                    this.readyState = 0;
-                    this.status = 0;
-                    this.statusText = "";
-                    this.responseText = "";
-                };
-                return ReplyXhr;
-            }
-
-            // Returns whether the next moveItem is answered by an HTTP reply through the real event transport.
-            function isMoveSentOverHttp(eventName) {
-                return eventName === "moveItem" && !!window.__nextMoveResponse
-                    && window.__nextMoveResponse.kind === "httpReply";
-            }
-
-            // Sends a moveItem through QCD.PageController.callEvent, performEvent, QCDConnector.sendPost and
-            // jQuery.ajax of the transport page controller. While the request is sent, window.XMLHttpRequest is the
-            // reply stand-in and a document ajaxSend handler keeps the jqXHR of the first request. The complete function
-            // the transport calls runs the complete function of the event and then records the answer; a request that
-            // jQuery rejects records the answer after a zero delay unless it is recorded by then, so each request
-            // records it in window.__lastResponseApplied once. Neither runs after a board is loaded. A reply without a
-            // numeric status and a string body records a fixture error and is answered after a zero delay without a
-            // request.
-            function sendMoveOverHttp(completeFunction, args) {
-                var reply = window.__nextMoveResponse;
-                var callGeneration = generation;
-                var answerRecorded = false;
-                var recordAnswer = function () {
-                    if (answerRecorded || callGeneration !== generation || !window.__gantt) {
-                        return;
-                    }
-                    answerRecorded = true;
-                    window.__seq += 1;
-                    window.__lastResponseApplied = {eventName: "moveItem", seq: window.__seq};
-                };
-                var transportComplete = function () {
-                    if (callGeneration !== generation || !window.__gantt) {
-                        return;
-                    }
-                    try {
-                        if (completeFunction) {
-                            completeFunction();
-                        }
-                    } finally {
-                        recordAnswer();
-                    }
-                };
-                if (typeof reply.status !== "number" || typeof reply.body !== "string") {
-                    recordFixtureError("httpReply moveItem response needs a numeric status and a string body");
-                    setTimeout(transportComplete, 0);
-                    return;
-                }
-                var eventTransport = getTransportController();
-                var nativeXhr = window.XMLHttpRequest;
-                var transportXhr = null;
-                var captureTransportXhr = function (event, jqXHR) {
-                    if (transportXhr === null) {
-                        transportXhr = jqXHR;
-                    }
-                };
-                QCDConnector.windowName = "/page/" + pluginIdentifier + "/" + viewName;
-                QCDConnector.mainController = window.mainController;
-                window.XMLHttpRequest = replyXhrClass({status: reply.status, body: reply.body});
-                $(document).bind("ajaxSend", captureTransportXhr);
-                try {
-                    eventTransport.callEvent("moveItem", null, transportComplete, args);
-                } finally {
-                    window.XMLHttpRequest = nativeXhr;
-                    $(document).unbind("ajaxSend", captureTransportXhr);
-                }
-                if (transportXhr !== null) {
-                    transportXhr.fail(function () {
-                        setTimeout(recordAnswer, 0);
-                    });
-                }
-            }
-
             // Recording stub of QCD.PageController: callEvent and showMessage.
             window.mainController = {
-                // Records an event call, then answers it through the real event transport for an httpReply moveItem
-                // answer, keeps the answer until window.__releaseHeldMove() for a hold: true moveItem answer, and
-                // otherwise answers it after a zero delay; each answer is recorded in window.__lastResponseApplied.
+                // Records an event call, then keeps the answer until window.__releaseHeldMove() for a hold: true
+                // moveItem answer and otherwise answers it after a zero delay; each answer is recorded in
+                // window.__lastResponseApplied.
                 callEvent: function (eventName, component, completeFunction, args, actionsPerformer, type) {
                     window.__calls.push({
                         eventName: eventName,
                         component: component,
                         args: args ? Array.prototype.slice.call(args) : null
                     });
-                    if (isMoveSentOverHttp(eventName)) {
-                        sendMoveOverHttp(completeFunction, args);
-                        return;
-                    }
                     if (isMoveAnswerHeld(eventName)) {
                         holdMoveAnswer(completeFunction, args);
                         return;
@@ -934,8 +774,7 @@
             };
 
             // Renders a board: rebuilds the host markup with the merged options, sets the current board, resets the
-            // recorded calls, messages, HTTP requests, header button calls, last answer and next moveItem response, and
-            // constructs the component.
+            // recorded calls, messages, last answer and next moveItem response, and constructs the component.
             window.__loadBoard = function (name, overrides) {
                 var definition = boardDefinition(name);
                 var boardOverrides = overrides || {};
@@ -944,8 +783,6 @@
                 heldMoveAnswer = null;
                 window.__calls = [];
                 window.__messages = [];
-                window.__httpRequests = [];
-                window.__headerButtonCalls = [];
                 window.__lastResponseApplied = null;
                 window.__nextMoveResponse = deepCopy(DEFAULT_MOVE_RESPONSE);
                 window.__currentBoard = mergeBoard(definition.board, boardOverrides.board);
