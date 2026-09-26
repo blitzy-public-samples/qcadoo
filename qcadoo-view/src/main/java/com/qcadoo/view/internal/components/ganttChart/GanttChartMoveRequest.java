@@ -73,7 +73,10 @@ public final class GanttChartMoveRequest {
      * @param dateTo
      *            new end of the item, must not be null
      * @param context
-     *            context of the Gantt chart component, may be null
+     *            context of the Gantt chart component, may be null; the request keeps a copy taken here, and later changes of
+     *            the given object do not reach the request
+     * @throws IllegalStateException
+     *             when the context cannot be written as JSON and read back
      */
     public GanttChartMoveRequest(final GanttChartItem item, final String targetRowName, final String originalRowName,
             final String originalName, final String originalDateFrom, final String originalDateTo, final Date dateFrom,
@@ -86,7 +89,7 @@ public final class GanttChartMoveRequest {
         this.originalDateTo = originalDateTo;
         this.dateFrom = new Date(dateFrom.getTime());
         this.dateTo = new Date(dateTo.getTime());
-        this.context = context;
+        this.context = copyOf(context);
     }
 
     /**
@@ -171,16 +174,34 @@ public final class GanttChartMoveRequest {
     }
 
     /**
-     * Returns a copy of the Gantt chart component context, or an empty object when no context was given.
+     * Returns a new copy of the Gantt chart component context as it was when the request was created, or an empty object when
+     * no context was given. Every call returns a new object.
      *
      * @return copy of the component context
      */
     public JSONObject getContext() {
-        if (context == null) {
+        return copyOf(context);
+    }
+
+    /**
+     * Copies a JSON object, nested objects and arrays included, by writing it as JSON text and parsing that text.
+     *
+     * @param source
+     *            object to copy, may be null
+     * @return a new object with the content of the source, or an empty object when the source is null
+     * @throws IllegalStateException
+     *             when the source cannot be written as JSON text, or its text cannot be parsed
+     */
+    private static JSONObject copyOf(final JSONObject source) {
+        if (source == null) {
             return new JSONObject();
         }
+        String text = source.toString();
+        if (text == null) {
+            throw new IllegalStateException("The Gantt chart component context cannot be written as JSON text");
+        }
         try {
-            return new JSONObject(context.toString());
+            return new JSONObject(text);
         } catch (JSONException e) {
             throw new IllegalStateException(e.getMessage(), e);
         }

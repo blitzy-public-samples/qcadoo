@@ -27,6 +27,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyString;
 import static org.mockito.Mockito.verify;
@@ -120,6 +121,21 @@ public class GanttChartComponentPatternTest {
         return pattern;
     }
 
+    /**
+     * Initializes a pattern with the given option, fails the test when the initialization succeeds and otherwise returns the
+     * {@link IllegalStateException} it threw.
+     */
+    private IllegalStateException initializeExpectingRejection(final ComponentOption option) throws Exception {
+        IllegalStateException rejection = null;
+        try {
+            createPattern(option);
+            fail("Gantt pattern accepted the allowItemMove value '" + option.getValue() + "'");
+        } catch (IllegalStateException e) {
+            rejection = e;
+        }
+        return rejection;
+    }
+
     @Test
     public final void shouldDisableItemMoveByDefault() throws Exception {
         // given
@@ -145,6 +161,86 @@ public class GanttChartComponentPatternTest {
         // then
         assertTrue(pattern.isAllowItemMove());
         assertTrue(jsOptions.getBoolean("allowItemMove"));
+    }
+
+    @Test
+    public final void shouldParseExplicitlyDisabledAllowItemMoveOption() throws Exception {
+        // given
+        GanttChartComponentPattern pattern = createPattern(new ComponentOption("allowItemMove", Collections.singletonMap(
+                "value", "false")));
+
+        // when
+        JSONObject jsOptions = pattern.getJsOptions(Locale.ENGLISH);
+
+        // then
+        assertFalse(pattern.isAllowItemMove());
+        assertFalse(jsOptions.getBoolean("allowItemMove"));
+    }
+
+    @Test
+    public final void shouldParseAllowItemMoveOptionIgnoringLetterCase() throws Exception {
+        // given
+        GanttChartComponentPattern pattern = createPattern(new ComponentOption("allowItemMove", Collections.singletonMap(
+                "value", "TRUE")));
+
+        // when
+        JSONObject jsOptions = pattern.getJsOptions(Locale.ENGLISH);
+
+        // then
+        assertTrue(pattern.isAllowItemMove());
+        assertTrue(jsOptions.getBoolean("allowItemMove"));
+    }
+
+    @Test
+    public final void shouldRejectInvalidAllowItemMoveValue() throws Exception {
+        // given
+        ComponentOption option = new ComponentOption("allowItemMove", Collections.singletonMap("value", "treu"));
+
+        // when
+        IllegalStateException rejection = initializeExpectingRejection(option);
+
+        // then
+        assertTrue(rejection.getMessage().contains("'allowItemMove'"));
+        assertTrue(rejection.getMessage().contains("'treu'"));
+        assertEquals("Gantt option 'allowItemMove' must be 'true' or 'false', but was 'treu'", rejection.getMessage());
+    }
+
+    @Test
+    public final void shouldRejectBlankAllowItemMoveValue() throws Exception {
+        // given
+        ComponentOption option = new ComponentOption("allowItemMove", Collections.singletonMap("value", ""));
+
+        // when
+        IllegalStateException rejection = initializeExpectingRejection(option);
+
+        // then
+        assertEquals("Gantt option 'allowItemMove' must be 'true' or 'false', but was ''", rejection.getMessage());
+    }
+
+    @Test
+    public final void shouldRejectNullAllowItemMoveValue() throws Exception {
+        // given
+        ComponentOption option = new ComponentOption("allowItemMove", Collections.singletonMap("value", (String) null));
+
+        // when
+        IllegalStateException rejection = initializeExpectingRejection(option);
+
+        // then
+        assertEquals("Gantt option 'allowItemMove' must be 'true' or 'false', but was 'null'", rejection.getMessage());
+    }
+
+    @Test
+    public final void shouldRejectAllowItemMoveOptionWithoutValueAttribute() throws Exception {
+        // given
+        // The view XML parser stores every attribute of <option type="allowItemMove" />, including "type", so the option's
+        // only attribute is its type, and getValue() returns that attribute's value.
+        ComponentOption option = new ComponentOption("allowItemMove", Collections.singletonMap("type", "allowItemMove"));
+
+        // when
+        IllegalStateException rejection = initializeExpectingRejection(option);
+
+        // then
+        assertEquals("Gantt option 'allowItemMove' must be 'true' or 'false', but was 'allowItemMove'", rejection.getMessage());
     }
 
     @Test

@@ -259,7 +259,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         HEADER_HEIGHT: 60,
         ROW_NAMES_WIDTH: 200,
         RIGHT_SCROLL_WIDTH: 17,
-        BOTTOM_SCROLL_HEIGHT: 16
+        BOTTOM_SCROLL_HEIGHT: 16,
+        // Milliseconds after the end of a drag during which a click on the dragged item is ignored.
+        CLICK_SUPPRESSION_MS: 1000
     };
 
     var currentCellSettings;
@@ -294,8 +296,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     // Dropped item awaiting the moveItem response, or null. Fields: element, preDragLeft, preDragTop and itemId.
     var pendingMove = null;
 
-    // When true, the next click on an item is ignored.
-    var suppressNextClick = false;
+    // Click to ignore after a drag, or null. Fields: element, the DOM element of the dragged item, and expiresAt, the
+    // time in milliseconds until which a click on that element is ignored.
+    var clickSuppression = null;
 
     function constructor() {
         createGantt();
@@ -329,9 +332,26 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
                 var rejectionBody = "<div class='ganttItemDescriptionName'>" + (_this.options.translations["move.rejectedHeader"] || "") + "</div>"
                     + "<div class='ganttItemDescriptionInfo'>" + (outcome.message || "") + "</div>";
                 var anchorRect = (movedItemElement.length > 0 ? movedItemElement[0] : element[0]).getBoundingClientRect();
-                ganttTooltip.setBody(rejectionBody);
+                ganttTooltip.setBody(rejectionBody, "alert");
                 ganttTooltip.show((anchorRect.left + anchorRect.right) / 2, anchorRect.bottom, rejectionBody);
                 pendingMove = null;
+                QCD.components.elements.utils.LoadingIndicator.unblockElement(element);
+                return;
+            }
+            if (value.moveResult.reloadRequired === true) {
+                // Accepted move delivered without its chart: keeps the dropped item at its drop position, hides the tooltip,
+                // shows the move result's message as an information message that stays until it is closed, and unblocks
+                // the chart without sending another event. A missing message renders as an empty string.
+                if (pendingMove) {
+                    pendingMove.element.removeClass("ganttItemDragging");
+                    pendingMove = null;
+                }
+                ganttTooltip.hide();
+                mainController.showMessage({
+                    type: "info",
+                    content: value.moveResult.message || "",
+                    autoClose: false
+                });
                 QCD.components.elements.utils.LoadingIndicator.unblockElement(element);
                 return;
             }
@@ -356,29 +376,42 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             newSelectedItem.addClass("ganttItemSelected");
         }
         collisionInfoBoxOverlay.hide();
-        QCD.components.elements.utils.LoadingIndicator.unblockElement(element);
+        // While a dropped item awaits the moveItem response, the chart stays blocked.
+        if (!pendingMove) {
+            QCD.components.elements.utils.LoadingIndicator.unblockElement(element);
+        }
     };
 
+    // A press or drag in progress ends without an event before the chart requests new content or shows its loading
+    // indicator.
     this.performInitialize = function () {
+        abandonDrag();
         refreshContent();
     };
 
     this.setComponentLoading = function (isLoadingVisible) {
         if (isLoadingVisible) {
+            abandonDrag();
             QCD.components.elements.utils.LoadingIndicator.blockElement(element);
             header.disableButtons();
         } else {
-            QCD.components.elements.utils.LoadingIndicator.unblockElement(element);
+            // While a dropped item awaits the moveItem response, the chart stays blocked; the header buttons are
+            // enabled.
+            if (!pendingMove) {
+                QCD.components.elements.utils.LoadingIndicator.unblockElement(element);
+            }
             header.enableButtons();
         }
     };
 
     this.onScaleChanged = function (newScale) {
+        abandonDrag();
         header.setCurrentScale(newScale);
         refreshContent();
     };
 
     this.onDateChanged = function () {
+        abandonDrag();
         refreshContent();
     };
 
@@ -408,6 +441,13 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         itemsBorderWidth = cellSettings.itemsBorderWidth || 1;
         itemsBorderColor = cellSettings.itemsBorderColor || "silver";
 
+        // A press or drag in progress ends before its item is removed. On charts that allow item moves, the tooltip is
+        // hidden as well.
+        abandonDrag();
+        if (_this.options.allowItemMove === true) {
+            ganttTooltip.hide();
+        }
+
         htmlElements.rowNamesConteiner.children().remove();
         htmlElements.rowsContainer.children().remove();
 
@@ -426,17 +466,47 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         updateItems(cellSettings.items, cellSettings.collisions);
 
         currentCellSettings = cellSettings;
+
+        rebindPendingMove();
+    }
+
+    /**
+     * Points the pending move, if any, at the rendered element of its item, or at an empty set when the chart shows no
+     * such item, and takes that element's current left and top as the position the move restores.
+     */
+    function rebindPendingMove() {
+        if (!pendingMove) {
+            return;
+        }
+        var mountedItemElement = $("#" + _this.elementSearchName + "_item_" + pendingMove.itemId);
+        pendingMove.element = mountedItemElement;
+        pendingMove.preDragLeft = mountedItemElement.css("left");
+        pendingMove.preDragTop = mountedItemElement.css("top");
     }
 
     function updateItems(items, collisions) {
+        var moveHoursInterval = getMoveHoursInterval();
         for (var itemIndex in items) {
             var item = items[itemIndex];
-            addItem(item, false);
+            addItem(item, false, moveHoursInterval);
         }
         for (var itemIndex in collisions) {
             var item = collisions[itemIndex];
             addItem(item, true);
         }
+    }
+
+    /**
+     * Returns the hours spanned by one chart cell at the current zoom level of the header, on charts that allow item moves.
+     *
+     * @returns the zoomHoursIntervals option entry of the current header scale, or undefined, without reading the header,
+     *          when the chart does not allow item moves or has no zoomHoursIntervals option
+     */
+    function getMoveHoursInterval() {
+        if (_this.options.allowItemMove !== true || !_this.options.zoomHoursIntervals) {
+            return undefined;
+        }
+        return _this.options.zoomHoursIntervals[header.getCurrentParameters().scale];
     }
 
     function showCollisionBox(ganttItem) {
@@ -553,6 +623,10 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
 
     function createGanttTooltip() {
         ganttTooltip = new QCD.components.elements.GanttChartTooltip(element);
+        // On charts that allow item moves, the tooltip also gets the live regions that announce drag targets and rejections.
+        if (_this.options.allowItemMove === true) {
+            ganttTooltip.enableLiveFeedback();
+        }
     }
 
     function setVerticalScrollVisible(visible) {
@@ -665,7 +739,16 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         return rowElement;
     }
 
-    function addItem(item, isCollision) {
+    /**
+     * Renders a Gantt item in its row and binds its selection, hover tooltip and, when it is draggable, pointer drag
+     * handlers.
+     *
+     * @param item Gantt item
+     * @param isCollision whether the item is a collision item
+     * @param moveHoursInterval hours spanned by one chart cell at the current zoom level on charts that allow item moves,
+     *                          as returned by getMoveHoursInterval; undefined leaves the item without a drag affordance
+     */
+    function addItem(item, isCollision, moveHoursInterval) {
         var row = rowsByName[item.row];
         var itemElement = $("<div>").addClass("ganttItem");
         itemElement.css("line-height", (constants.CELL_HEIGHT - 4 - (2 * itemsBorderWidth)) + "px");
@@ -754,8 +837,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             itemElement[0].entityId = item.id; // add entityId to DOM element
             itemElement.css("cursor", "pointer");
             itemElement.click(function () {
-                if (suppressNextClick) {
-                    suppressNextClick = false;
+                if (consumeClickSuppression(this)) {
                     return;
                 }
                 if (this.isCollision) {
@@ -773,8 +855,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }
 
         // Draggable items get the ganttItemDraggable class, the move cursor and the pointer drag handlers.
-        var hoursInterval = _this.options.zoomHoursIntervals ? _this.options.zoomHoursIntervals[header.getCurrentParameters().scale] : undefined;
-        if (moveTransform.isDraggable(item, isCollision, _this.options.allowItemMove, hoursInterval, constants.CELL_WIDTH, _this.options.moveGridMinutes)) {
+        if (moveTransform.isDraggable(item, isCollision, _this.options.allowItemMove, moveHoursInterval, constants.CELL_WIDTH, _this.options.moveGridMinutes)) {
             itemElement.addClass("ganttItemDraggable");
             itemElement.css("cursor", "move");
             itemElement.bind({
@@ -797,7 +878,11 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
 
     /**
      * Starts a pending press of a draggable item with the primary button: captures the pointer on the item and records the
-     * item's position, row, dates and the pointer start. Ignored while a press, drag or move request is in progress.
+     * item's position, row, dates and the pointer start. Every pointerdown first discards a press or drag whose item is
+     * no longer in the document. A primary-button pointerdown with valid pointer input on the item of the click
+     * suppression ends that suppression. Ignored for any other button, for a pointerdown without an integral pointer id
+     * and finite coordinates, while a press, drag or move request is in progress, and when the item cannot capture the
+     * pointer.
      *
      * @param eventObj pointerdown event
      * @param item pressed Gantt item
@@ -805,13 +890,28 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
      */
     function startPress(eventObj, item, itemElement) {
         var oe = eventObj.originalEvent || eventObj;
-        if (oe.button !== 0 || pendingMove || dragState) {
+        discardDetachedDrag();
+        if (oe.button !== 0 || !isValidPointerInput(oe)) {
+            return;
+        }
+        if (clickSuppression !== null && clickSuppression.element === itemElement[0]) {
+            clickSuppression = null;
+        }
+        if (pendingMove || dragState) {
             return;
         }
         eventObj.preventDefault();
-        suppressNextClick = false;
         if (itemElement[0].setPointerCapture) {
-            itemElement[0].setPointerCapture(oe.pointerId);
+            try {
+                itemElement[0].setPointerCapture(oe.pointerId);
+            } catch (captureError) {
+                QCD.debug("Gantt item press ignored: pointer " + oe.pointerId + " cannot be captured: " + captureError);
+                return;
+            }
+            if (itemElement[0].hasPointerCapture && !itemElement[0].hasPointerCapture(oe.pointerId)) {
+                QCD.debug("Gantt item press ignored: pointer " + oe.pointerId + " is not captured by the item");
+                return;
+            }
         }
         dragState = {
             phase: "pending",
@@ -835,13 +935,18 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     /**
      * Follows the pointer of the current press. A pending press becomes an active drag once the pointer has travelled
      * DRAG_THRESHOLD_PX on either axis; the item then gets the ganttItemDragging class and the hover tooltip is hidden. An
-     * active drag moves the item to the snapped target.
+     * active drag moves the item to the snapped target. A pointermove of the tracked pointer without finite coordinates
+     * abandons the press or drag.
      *
      * @param eventObj pointermove event
      */
     function onDragMove(eventObj) {
         var oe = eventObj.originalEvent || eventObj;
-        if (!dragState || oe.pointerId !== dragState.pointerId) {
+        if (!isTrackedPointer(oe)) {
+            return;
+        }
+        if (!isValidPointerInput(oe)) {
+            abandonDrag();
             return;
         }
         if (dragState.phase === "pending") {
@@ -857,44 +962,59 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     }
 
     /**
-     * Places the dragged item at the snapped date and the row under the pointer, stores them as the drag target and shows
-     * the target row and date in the tooltip at the pointer.
+     * Resolves the snapped date and the row under the pointer of the current drag; the position of the rows content is
+     * read before anything is written. When the date or the row differs from the stored drag target, or the tooltip is
+     * hidden, stores both as the drag target, writes the target row and date to the tooltip body and its status live
+     * region, shows the tooltip at the pointer, and then places the dragged item at the snapped date and, when the pointer
+     * is over a row, in that row. Otherwise only moves the visible tooltip to the pointer, leaving the item and the
+     * tooltip body unchanged.
      *
      * @param oe native pointer event
      */
     function updateDragTarget(oe) {
-        var date = moveTransform.toDropDate(dragState.dateFrom, oe.clientX - dragState.startX, dragState.hoursInterval, constants.CELL_WIDTH, _this.options.moveGridMinutes);
-        dragState.element.css("left", (parseFloat(dragState.preDragLeft) + moveTransform.toPixelDelta(dragState.dateFrom, date, dragState.hoursInterval, constants.CELL_WIDTH)) + "px");
-
-        var contentY = oe.clientY - htmlElements.rowsContainer[0].getBoundingClientRect().top;
-        var row = moveTransform.resolveDropRow(contentY, constants.CELL_HEIGHT, currentCellSettings.rows);
-        if (row !== null) {
-            dragState.element.css("top", (1 + (currentCellSettings.rows.indexOf(row) - dragState.originIndex) * constants.CELL_HEIGHT) + "px");
+        var contentY = oe.clientY - htmlElements.rowsContainer[0].getBoundingClientRect().top,
+            date = moveTransform.toDropDate(dragState.dateFrom, oe.clientX - dragState.startX, dragState.hoursInterval, constants.CELL_WIDTH, _this.options.moveGridMinutes),
+            row = moveTransform.resolveDropRow(contentY, constants.CELL_HEIGHT, currentCellSettings.rows);
+        if (date === dragState.targetDate && row === dragState.targetRow) {
+            if (ganttTooltip.moveTo(oe.clientX, oe.clientY)) {
+                return;
+            }
         }
+        dragState.targetDate = date;
+        dragState.targetRow = row;
 
         // A missing row or date renders as an empty string, and so does a missing dateFrom label translation.
         var body = "<div class='ganttItemDescriptionName'>" + moveTransform.escapeHtml(row) + "</div>"
             + "<div class='ganttItemDescriptionInfo'><div class='ganttItemDescriptionLabel'>" + (_this.options.translations["description.dateFrom"] || "") + "</div>"
             + "<div class='ganttItemDescriptionValue'>" + moveTransform.escapeHtml(date) + "</div></div>";
-        if (date !== dragState.targetDate || row !== dragState.targetRow) {
-            dragState.targetDate = date;
-            dragState.targetRow = row;
-            ganttTooltip.setBody(body);
-        }
+        ganttTooltip.setBody(body, "status");
         ganttTooltip.show(oe.clientX, oe.clientY, body);
+
+        dragState.element.css("left", (parseFloat(dragState.preDragLeft) + moveTransform.toPixelDelta(dragState.dateFrom, date, dragState.hoursInterval, constants.CELL_WIDTH)) + "px");
+        if (row !== null) {
+            // Index of the row under the pointer, derived from contentY as resolveDropRow derives it.
+            var targetIndex = Math.floor(contentY / constants.CELL_HEIGHT);
+            dragState.element.css("top", (1 + (targetIndex - dragState.originIndex) * constants.CELL_HEIGHT) + "px");
+        }
     }
 
     /**
      * Ends the current press on pointer release. A pending press ends without a move, leaving the click to select the item.
-     * An active drag hides the tooltip, ignores the click that follows, and either restores the item, when the drop point
-     * lies outside the visible rows content, the target is incomplete, or the target equals the original row and date, or
-     * blocks the chart and sends the moveItem event with the target.
+     * An active drag hides the tooltip, ignores the next click on the dragged item for constants.CLICK_SUPPRESSION_MS
+     * or until the next primary-button pointerdown on that item, and either restores the item, when the drop point lies
+     * outside the visible rows content, the target is incomplete, or the target equals the original row and date, or
+     * blocks the chart and sends the moveItem event with the target. A pointerup of the tracked pointer without finite
+     * coordinates abandons the press or drag without sending an event.
      *
      * @param eventObj pointerup event
      */
     function endDrag(eventObj) {
         var oe = eventObj.originalEvent || eventObj;
-        if (!dragState || oe.pointerId !== dragState.pointerId) {
+        if (!isTrackedPointer(oe)) {
+            return;
+        }
+        if (!isValidPointerInput(oe)) {
+            abandonDrag();
             return;
         }
         if (dragState.phase === "pending") {
@@ -904,10 +1024,10 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
 
         updateDragTarget(oe);
         ganttTooltip.hide();
-        suppressNextClick = true;
-        setTimeout(function () {
-            suppressNextClick = false;
-        }, 0);
+        clickSuppression = {
+            element: dragState.element[0],
+            expiresAt: new Date().getTime() + constants.CLICK_SUPPRESSION_MS
+        };
 
         var wrapperElement = htmlElements.rowsContainerWrapper[0];
         var wrapperRect = wrapperElement.getBoundingClientRect();
@@ -1007,6 +1127,90 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         dragState = null;
     }
 
+    /**
+     * Ends the current press or drag, if any, without sending an event: releases the pointer capture the item still
+     * holds, restores the item, hides the tooltip and clears the drag state.
+     */
+    function abandonDrag() {
+        if (!dragState) {
+            return;
+        }
+        var itemNode = dragState.element[0];
+        if (itemNode && itemNode.hasPointerCapture && itemNode.releasePointerCapture
+                && itemNode.hasPointerCapture(dragState.pointerId)) {
+            itemNode.releasePointerCapture(dragState.pointerId);
+        }
+        restoreItemPosition(dragState);
+        ganttTooltip.hide();
+        dragState = null;
+    }
+
+    /**
+     * Abandons the current press or drag when its item is no longer in the document.
+     */
+    function discardDetachedDrag() {
+        if (dragState && !$.contains(document.documentElement, dragState.element[0])) {
+            abandonDrag();
+        }
+    }
+
+    /**
+     * Returns whether a pointer event belongs to the pointer of the current press or drag, after discarding a press or
+     * drag whose item is no longer in the document.
+     *
+     * @param oe native pointer event
+     * @returns true when a press or drag is in progress and the event carries its pointer id
+     */
+    function isTrackedPointer(oe) {
+        discardDetachedDrag();
+        return dragState !== null && oe.pointerId === dragState.pointerId;
+    }
+
+    /**
+     * Returns whether a value is a finite number.
+     *
+     * @param value value to check
+     * @returns true when the value is of type number and neither NaN nor infinite
+     */
+    function isFiniteNumber(value) {
+        return typeof value === "number" && isFinite(value);
+    }
+
+    /**
+     * Returns whether a pointer event carries an integral pointer id within the 32-bit signed integer range and finite
+     * clientX and clientY coordinates.
+     *
+     * @param oe native pointer event
+     * @returns true when the pointer id is such an integer and both coordinates are finite numbers
+     */
+    function isValidPointerInput(oe) {
+        return isFiniteNumber(oe.pointerId) && oe.pointerId % 1 === 0 && oe.pointerId >= -2147483648
+            && oe.pointerId <= 2147483647 && isFiniteNumber(oe.clientX) && isFiniteNumber(oe.clientY);
+    }
+
+    /**
+     * Returns whether a click on an item is ignored: true, ending the click suppression, when the click lands on the
+     * dragged item before the suppression expires. An expired suppression ends at any item click; a click on another
+     * item leaves an unexpired suppression in place.
+     *
+     * @param itemNode DOM element of the clicked item
+     * @returns true when the click is ignored
+     */
+    function consumeClickSuppression(itemNode) {
+        if (clickSuppression === null) {
+            return false;
+        }
+        if (new Date().getTime() >= clickSuppression.expiresAt) {
+            clickSuppression = null;
+            return false;
+        }
+        if (clickSuppression.element !== itemNode) {
+            return false;
+        }
+        clickSuppression = null;
+        return true;
+    }
+
     function createStripElement(strip) {
         var stripElement = $("<div>").addClass("ganttItemStrip");
         if (stripsOrientation == 'vertical') {
@@ -1057,6 +1261,12 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
 
     var htmlElements = {};
 
+    // liveRegions: live regions of the chart element keyed by role, "status" and "alert", or null while live feedback is
+    // not enabled. measuredSize: tooltip size measured by moveTo, with width, height and bodyNode, the first node of the
+    // tooltip body when measured, or null before the first measurement.
+    var liveRegions = null,
+        measuredSize = null;
+
     function constructor() {
         createTooltip();
     }
@@ -1075,12 +1285,93 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
     }
 
     /**
-     * Replaces the tooltip body, whether the tooltip is visible or hidden.
+     * Appends to the chart element an empty, visually hidden and atomic live region that the pointer never hits.
+     *
+     * @param role ARIA role of the region
+     * @param politeness aria-live value of the region
+     * @returns the region element
+     */
+    function createLiveRegion(role, politeness) {
+        var region = $("<div>").addClass("ganttChartLiveRegion");
+        region.attr({
+            "role": role,
+            "aria-live": politeness,
+            "aria-atomic": "true"
+        });
+        region.css({
+            "position": "absolute",
+            "width": "1px",
+            "height": "1px",
+            "margin": "-1px",
+            "padding": "0",
+            "border": "0",
+            "overflow": "hidden",
+            "clip": "rect(0 0 0 0)",
+            "white-space": "nowrap",
+            "pointer-events": "none"
+        });
+        element.append(region);
+        return region;
+    }
+
+    /**
+     * Enables live feedback: appends to the chart element a polite status region and an assertive alert region, which
+     * setBody fills when asked to. Later calls change nothing.
+     */
+    this.enableLiveFeedback = function () {
+        if (liveRegions) {
+            return;
+        }
+        liveRegions = {
+            status: createLiveRegion("status", "polite"),
+            alert: createLiveRegion("alert", "assertive")
+        };
+    };
+
+    /**
+     * Replaces the tooltip body, whether the tooltip is visible or hidden. With live feedback enabled and a liveRole of
+     * "status" or "alert", the content of that live region is also replaced by a new element holding the text of the new
+     * body: its trimmed, non-empty text nodes in document order, joined by single spaces.
+     *
+     * Example: setBody("<div>L2</div><div><div>Start</div><div>2026-06-01 10:00:00</div></div>", "status") puts
+     * "L2 Start 2026-06-01 10:00:00" in the status region.
      *
      * @param body HTML of the new body
+     * @param liveRole optional role of the live region that announces the new body, "status" or "alert"; any other value,
+     *                 or a tooltip without live feedback, leaves the live regions unchanged
      */
-    this.setBody = function (body) {
+    this.setBody = function (body, liveRole) {
         htmlElements.tooltipBodyWrapper.html(body);
+        if (liveRegions && Object.prototype.hasOwnProperty.call(liveRegions, liveRole)) {
+            liveRegions[liveRole].empty().append($("<div>").text(getBodyText()));
+        }
+    };
+
+    /**
+     * Moves the visible tooltip to the position show would give it for a pointer position, without writing its body. The
+     * tooltip is measured on the first call and again after its body content has been replaced, by setBody or by show;
+     * other calls reuse that measurement. A hidden tooltip is left unchanged.
+     *
+     * @param x horizontal viewport position of the pointer
+     * @param y vertical viewport position of the pointer
+     * @returns true when the tooltip is visible and has been moved, false when it is hidden
+     */
+    this.moveTo = function (x, y) {
+        if (!visible) {
+            return false;
+        }
+        var bodyNode = htmlElements.tooltipBodyWrapper[0].firstChild,
+            position;
+        if (!measuredSize || measuredSize.bodyNode !== bodyNode) {
+            measuredSize = {
+                width: htmlElements.tooltipElement.width(),
+                height: htmlElements.tooltipElement.height(),
+                bodyNode: bodyNode
+            };
+        }
+        position = calculatePosition(x, y, measuredSize);
+        htmlElements.tooltipElement.css("left", position.x).css("top", position.y);
+        return true;
     };
 
     this.show = function (x, y, body) {
@@ -1105,7 +1396,16 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         visible = false;
     };
 
-    function calculatePosition(x, y) {
+    /**
+     * Calculates the viewport position of the tooltip for a pointer position: centred below the pointer, kept inside the
+     * window horizontally and placed above the pointer when it would reach the bottom of the window.
+     *
+     * @param x horizontal viewport position of the pointer
+     * @param y vertical viewport position of the pointer
+     * @param size optional tooltip size with width and height; without it the tooltip is measured
+     * @returns position with x and y
+     */
+    function calculatePosition(x, y, size) {
         var spacing = {
             top: 20,
             right: 40,
@@ -1116,8 +1416,8 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         var windowWidth = $(window).width();
         var windowHeight = $(window).height();
 
-        var tooltipWidth = htmlElements.tooltipElement.width();
-        var tooltipHeight = htmlElements.tooltipElement.height();
+        var tooltipWidth = size ? size.width : htmlElements.tooltipElement.width();
+        var tooltipHeight = size ? size.height : htmlElements.tooltipElement.height();
 
         var calcX = x - (tooltipWidth / 2);
         var calcY = y + 20;
@@ -1135,6 +1435,37 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         return {
             x: calcX,
             y: calcY
+        }
+    }
+
+    /**
+     * Returns the text of the tooltip body.
+     *
+     * @returns the trimmed, non-empty text nodes of the body in document order, joined by single spaces
+     */
+    function getBodyText() {
+        var parts = [];
+        collectTextNodes(htmlElements.tooltipBodyWrapper[0], parts);
+        return parts.join(" ");
+    }
+
+    /**
+     * Appends the trimmed, non-empty text of every text node below a node to a list, in document order.
+     *
+     * @param node DOM node whose descendants are read
+     * @param parts list receiving the texts
+     */
+    function collectTextNodes(node, parts) {
+        var child, text;
+        for (child = node.firstChild; child; child = child.nextSibling) {
+            if (child.nodeType === 3) {
+                text = $.trim(child.nodeValue);
+                if (text.length > 0) {
+                    parts.push(text);
+                }
+            } else if (child.nodeType === 1) {
+                collectTextNodes(child, parts);
+            }
         }
     }
 

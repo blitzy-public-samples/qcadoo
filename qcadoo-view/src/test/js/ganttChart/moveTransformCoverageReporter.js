@@ -517,4 +517,3 @@ module.exports = async function* moveTransformCoverageReporter(source) {
     }
     yield 'pass ' + pass + ' fail ' + fail + ' skipped ' + skipped + ' todo ' + todo + '\n';
 };
-

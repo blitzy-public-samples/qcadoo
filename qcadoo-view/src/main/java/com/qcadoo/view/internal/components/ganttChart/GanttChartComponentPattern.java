@@ -107,12 +107,33 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
             } else if ("itemsBorderColor".equals(option.getType())) {
                 itemsBorderColor = option.getValue();
             } else if ("allowItemMove".equals(option.getType())) {
-                allowItemMove = Boolean.valueOf(option.getValue());
+                allowItemMove = parseAllowItemMove(option.getValue());
             }
         }
         if (resolver == null) {
             throw new IllegalStateException("Gantt must contain 'resolver' option");
         }
+    }
+
+    /**
+     * Parses the value of the {@code allowItemMove} view option. {@code "true"} and {@code "false"} are accepted in any letter
+     * case and give the corresponding flag.
+     *
+     * @param value
+     *            the option's value, {@code null} when the option carries no value
+     * @return the parsed flag
+     * @throws IllegalStateException
+     *             if the value is {@code null}, blank or any string other than {@code "true"} or {@code "false"}; the message
+     *             names the option and the value
+     */
+    private static boolean parseAllowItemMove(final String value) {
+        if ("true".equalsIgnoreCase(value)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(value)) {
+            return false;
+        }
+        throw new IllegalStateException("Gantt option 'allowItemMove' must be 'true' or 'false', but was '" + value + "'");
     }
 
     @Override

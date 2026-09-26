@@ -23,17 +23,23 @@
  */
 package com.qcadoo.view.internal.components.ganttChart;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.TimeZone;
+import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringEscapeUtils;
+import org.codehaus.jackson.JsonFactory;
+import org.codehaus.jackson.JsonParser;
+import org.codehaus.jackson.JsonToken;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.LocalDateTime;
@@ -42,6 +48,8 @@ import org.joda.time.format.DateTimeFormatter;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.qcadoo.localization.api.utils.DateUtils;
 import com.qcadoo.model.internal.api.ValueAndError;
@@ -49,10 +57,14 @@ import com.qcadoo.model.internal.types.DateType;
 import com.qcadoo.view.api.components.ganttChart.GanttChartItem;
 import com.qcadoo.view.api.components.ganttChart.GanttChartItemResolver;
 import com.qcadoo.view.api.components.ganttChart.GanttChartItemStrip.Orientation;
+import com.qcadoo.view.api.components.ganttChart.GanttChartItemTooltip;
+import com.qcadoo.view.api.components.ganttChart.GanttChartScale;
 import com.qcadoo.view.internal.components.ganttChart.GanttChartScaleImpl.ZoomLevel;
 import com.qcadoo.view.internal.states.AbstractComponentState;
 
 public class GanttChartComponentState extends AbstractComponentState {
+
+    private static final Logger LOG = LoggerFactory.getLogger(GanttChartComponentState.class);
 
     public final GanttChartComponentEventPerformer eventPerformer = new GanttChartComponentEventPerformer();
 
@@ -80,6 +92,8 @@ public class GanttChartComponentState extends AbstractComponentState {
 
     private static final String L_ITEM_ID = "itemId";
 
+    private static final String L_RELOAD_REQUIRED = "reloadRequired";
+
     private static final String L_ROW = "row";
 
     private static final String L_DATE_FROM = "dateFrom";
@@ -92,13 +106,22 @@ public class GanttChartComponentState extends AbstractComponentState {
 
     private static final String L_ORIGINAL_DATE_TO = "originalDateTo";
 
-    /** Keys every moveItem payload must carry with a non-null value. */
-    private static final String[] MOVE_PAYLOAD_KEYS = { L_ITEM_ID, L_ROW, L_DATE_FROM, L_ORIGINAL_ROW, L_ORIGINAL_NAME,
+    /** Keys every moveItem payload must carry with a JSON string value; {@code itemId} must carry a JSON integer. */
+    private static final String[] MOVE_PAYLOAD_TEXT_KEYS = { L_ROW, L_DATE_FROM, L_ORIGINAL_ROW, L_ORIGINAL_NAME,
             L_ORIGINAL_DATE_FROM, L_ORIGINAL_DATE_TO };
+
+    /** Parser factory of the moveItem payload, reading standard JSON syntax only. */
+    private static final JsonFactory MOVE_PAYLOAD_JSON_FACTORY = new JsonFactory();
+
+    /** Canonical {@value DateUtils#L_DATE_TIME_FORMAT} text: four ASCII digits of year, two ASCII digits in every other field. */
+    private static final Pattern MOVE_DATE_PATTERN = Pattern.compile("[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}");
 
     private static final String L_MOVE_ERROR_PREFIX = "move.error.";
 
     private static final String L_NOT_HANDLED = "notHandled";
+
+    /** Translation suffix of the message of an accepted move whose chart has to be reloaded. */
+    private static final String L_MOVE_RELOAD_REQUIRED = "move.reloadRequired";
 
     private static final String L_MOVE_DISABLED = "moveDisabled";
 
@@ -220,18 +243,53 @@ public class GanttChartComponentState extends AbstractComponentState {
     }
 
     /**
-     * Renders the chart content. A move that is not accepted renders only its {@code moveResult}; an accepted move renders the
-     * whole chart together with its {@code moveResult}; without a move the chart renders without a {@code moveResult} key.
+     * Renders the chart content. A move that is not accepted, and an accepted move whose result carries
+     * {@code reloadRequired}, render only their {@code moveResult}. An accepted move renders the whole chart together with its
+     * {@code moveResult}; when that chart fails to render, the failure is logged and the content is only an accepted
+     * {@code moveResult} with {@code reloadRequired} set to true and the translated reload-required message. Without a move
+     * the chart renders without a {@code moveResult} key.
      */
     @Override
     protected JSONObject renderContent() throws JSONException {
 
-        if (moveResult != null && !moveResult.optBoolean(L_ACCEPTED)) {
-            JSONObject rejectedMoveJson = new JSONObject();
-            rejectedMoveJson.put(L_MOVE_RESULT, moveResult);
-            return rejectedMoveJson;
+        if (moveResult != null && (!moveResult.optBoolean(L_ACCEPTED) || moveResult.optBoolean(L_RELOAD_REQUIRED))) {
+            return renderMoveResultOnly();
         }
 
+        if (moveResult == null) {
+            return renderChart();
+        }
+
+        JSONObject json;
+        try {
+            json = renderChart();
+        } catch (JSONException | RuntimeException e) {
+            LOG.error("Failed to render the Gantt chart of an accepted move", e);
+            setMoveResult(moveResult.opt(L_ITEM_ID), true, true, translate(L_MOVE_RELOAD_REQUIRED));
+            return renderMoveResultOnly();
+        }
+        json.put(L_MOVE_RESULT, moveResult);
+        return json;
+    }
+
+    /**
+     * Renders content holding only the move result.
+     *
+     * @return JSON object with the single key {@code moveResult}
+     */
+    private JSONObject renderMoveResultOnly() throws JSONException {
+        JSONObject moveResultJson = new JSONObject();
+        moveResultJson.put(L_MOVE_RESULT, moveResult);
+        return moveResultJson;
+    }
+
+    /**
+     * Renders the chart: the zoom level, the header dates and their error messages, the global error message and, without a
+     * global error message, the scale, strips orientation, item borders, rows, items, collisions and selected entity id.
+     *
+     * @return the chart content without a {@code moveResult} key
+     */
+    private JSONObject renderChart() throws JSONException {
         JSONObject json = new JSONObject();
 
         json.put("zoomLevel", scale.getZoomLevel().toString());
@@ -281,10 +339,6 @@ public class GanttChartComponentState extends AbstractComponentState {
             json.put("selectedEntityId", selectedEntityId);
         }
 
-        if (moveResult != null) {
-            json.put(L_MOVE_RESULT, moveResult);
-        }
-
         return json;
     }
 
@@ -311,13 +365,27 @@ public class GanttChartComponentState extends AbstractComponentState {
     }
 
     /**
-     * Accepts the move: re-resolves the chart items and collisions, and marks the move result as accepted.
+     * Accepts the move: marks the move result as accepted, then re-resolves the chart items and collisions. When the
+     * re-resolution succeeds, the accepted result renders together with the refreshed chart. When it fails with a runtime
+     * exception, the failure is logged, no exception is thrown, and the accepted result keeps {@code reloadRequired} set to
+     * true and the translated reload-required message, so the content is only that result. Without a move result the chart
+     * items and collisions are only re-resolved.
      */
     public void acceptMove() {
-        eventPerformer.refresh(new String[0]);
-        if (moveResult != null) {
-            setMoveResult(moveResult.opt(L_ITEM_ID), true, null);
+        if (moveResult == null) {
+            eventPerformer.refresh(new String[0]);
+            return;
         }
+        Object itemId = moveResult.opt(L_ITEM_ID);
+        setMoveResult(itemId, true, true, translate(L_MOVE_RELOAD_REQUIRED));
+        requestRender();
+        try {
+            eventPerformer.refresh(new String[0]);
+        } catch (RuntimeException e) {
+            LOG.error("Failed to refresh the Gantt chart after an accepted move", e);
+            return;
+        }
+        setMoveResult(itemId, true, null);
     }
 
     /**
@@ -345,7 +413,7 @@ public class GanttChartComponentState extends AbstractComponentState {
     }
 
     /**
-     * Replaces the move result with a new one.
+     * Replaces the move result with a new one without {@code reloadRequired}.
      *
      * @param itemId
      *            entity id of the moved item, or null when unknown
@@ -355,10 +423,29 @@ public class GanttChartComponentState extends AbstractComponentState {
      *            message shown to the user, or null for none
      */
     private void setMoveResult(final Object itemId, final boolean accepted, final String message) {
+        setMoveResult(itemId, accepted, false, message);
+    }
+
+    /**
+     * Replaces the move result with a new one.
+     *
+     * @param itemId
+     *            entity id of the moved item, or null when unknown
+     * @param accepted
+     *            whether the move is accepted
+     * @param reloadRequired
+     *            whether the result carries {@code reloadRequired} set to true; when false the key is absent
+     * @param message
+     *            message shown to the user, or null for none
+     */
+    private void setMoveResult(final Object itemId, final boolean accepted, final boolean reloadRequired, final String message) {
         JSONObject result = new JSONObject();
         try {
             result.put(L_ITEM_ID, itemId == null ? JSONObject.NULL : itemId);
             result.put(L_ACCEPTED, accepted);
+            if (reloadRequired) {
+                result.put(L_RELOAD_REQUIRED, true);
+            }
             if (message != null) {
                 result.put(L_MESSAGE, message);
             }
@@ -396,23 +483,57 @@ public class GanttChartComponentState extends AbstractComponentState {
         }
 
         /**
-         * Handles the moveItem event. The first argument is a JSON object with the keys {@code itemId}, {@code row},
-         * {@code dateFrom}, {@code originalRow}, {@code originalName}, {@code originalDateFrom} and {@code originalDateTo};
-         * dates use the {@value DateUtils#L_DATE_TIME_FORMAT} format and {@code dateFrom} is a wall-clock time of the JVM
-         * default time zone.
-         * <p>
-         * The checks run in this order and the first failure rejects the move: moves allowed by the component, a valid chart
-         * scale, a complete payload, a parseable {@code dateFrom}, a {@code dateFrom} that exists in the time zone, an item
-         * with the given entity id among the resolved items, a resolved target row, and a {@code dateFrom} on the
-         * {@link GanttChartComponentPattern#MOVE_GRID_MINUTES} grid. A passing move keeps the item's duration, sets the item's
-         * new dates and positions through {@link GanttChartModifiableItem}, and becomes available from
-         * {@link GanttChartComponentState#getMoveRequest()}. Its result stays "not handled" until a listener calls
-         * {@link GanttChartComponentState#acceptMove()} or {@link GanttChartComponentState#rejectMove(String, String...)}.
+         * Handles the moveItem event through {@link #performMoveItem(String[])}. A runtime exception thrown there does not
+         * leave this method: it is logged, no move request is exposed, and the move result becomes "not handled" for the item
+         * id known so far.
          *
          * @param args
-         *            event arguments, the first holding the JSON payload
+         *            event arguments, holding the JSON payload as their only element
          */
         public void moveItem(final String[] args) {
+            try {
+                performMoveItem(args);
+            } catch (RuntimeException e) {
+                failMove(e);
+            }
+        }
+
+        /**
+         * Rejects a move whose handling failed: logs the exception, clears the move request, requests rendering, and replaces
+         * the move result with a "not handled" result that keeps the item id known so far.
+         *
+         * @param exception
+         *            the exception thrown while the move was handled
+         */
+        private void failMove(final RuntimeException exception) {
+            LOG.error("Failed to handle the moveItem event of the Gantt chart", exception);
+            Object itemId = moveResult == null ? null : moveResult.opt(L_ITEM_ID);
+            moveRequest = null;
+            requestRender();
+            setMoveResult(itemId, false, translate(L_MOVE_ERROR_PREFIX + L_NOT_HANDLED));
+        }
+
+        /**
+         * Handles the moveItem event. The only argument is a JSON object in strict JSON syntax with the integer
+         * {@code itemId} and the strings {@code row}, {@code dateFrom}, {@code originalRow}, {@code originalName},
+         * {@code originalDateFrom} and {@code originalDateTo}; dates use the canonical {@value DateUtils#L_DATE_TIME_FORMAT}
+         * format and {@code dateFrom} is a wall-clock time of the JVM default time zone.
+         * <p>
+         * The checks run in this order and the first failure rejects the move: moves allowed by the component, a valid chart
+         * scale, a payload that passes {@link #parseMovePayload(String[])}, a parseable {@code dateFrom}, a {@code dateFrom}
+         * that exists in the time zone, an item with the given entity id among the resolved items, a resolved target row, a
+         * {@code dateFrom} on the {@link GanttChartComponentPattern#MOVE_GRID_MINUTES} grid, and a duration of the resolved
+         * item that {@link #getResolvedDuration(GanttChartItem, ItemBoundsRecordingScale)} establishes. The resolver receives
+         * an {@link ItemBoundsRecordingScale} over the component's scale. A passing move keeps the item's duration, sets the
+         * item's new dates and positions through {@link GanttChartModifiableItem}, and becomes available from
+         * {@link GanttChartComponentState#getMoveRequest()}, whose end is the new start plus that duration. Its result stays
+         * "not handled" until a listener calls {@link GanttChartComponentState#acceptMove()} or
+         * {@link GanttChartComponentState#rejectMove(String, String...)}.
+         *
+         * @param args
+         *            event arguments, holding the JSON payload as their only element
+         */
+        private void performMoveItem(final String[] args) {
             moveRequest = null;
             requestRender();
             String notHandledMessage = translate(L_MOVE_ERROR_PREFIX + L_NOT_HANDLED);
@@ -427,20 +548,17 @@ public class GanttChartComponentState extends AbstractComponentState {
                 return;
             }
 
-            JSONObject payload = parseMovePayload(args);
-            Long itemId = null;
-            if (payload != null) {
-                itemId = parseItemId(payload);
-            }
-            if (itemId == null) {
+            MovePayload payload = parseMovePayload(args);
+            if (payload == null) {
                 rejectWith(null, L_INVALID_REQUEST);
                 return;
             }
+            Long itemId = payload.getItemId();
             setMoveResult(itemId, false, notHandledMessage);
 
-            String row = payload.optString(L_ROW);
+            String row = payload.getText(L_ROW);
 
-            LocalDateTime wallClockFrom = parseWallClock(payload.optString(L_DATE_FROM));
+            LocalDateTime wallClockFrom = parseWallClock(payload.getText(L_DATE_FROM));
             if (wallClockFrom == null) {
                 rejectWith(itemId, L_INVALID_REQUEST);
                 return;
@@ -451,7 +569,8 @@ public class GanttChartComponentState extends AbstractComponentState {
                 return;
             }
 
-            Map<String, List<GanttChartItem>> resolvedItems = itemResolver.resolve(scale, context, getLocale());
+            ItemBoundsRecordingScale recordingScale = new ItemBoundsRecordingScale(scale);
+            Map<String, List<GanttChartItem>> resolvedItems = itemResolver.resolve(recordingScale, context, getLocale());
             GanttChartItem item = findResolvedItem(resolvedItems, itemId);
             if (!(item instanceof GanttChartModifiableItem)) {
                 rejectWith(itemId, L_ITEM_NOT_MOVABLE);
@@ -466,13 +585,12 @@ public class GanttChartComponentState extends AbstractComponentState {
                 return;
             }
 
-            Date resolvedDateFrom = parseResolvedDate(item.getDateFrom());
-            Date resolvedDateTo = parseResolvedDate(item.getDateTo());
-            if (resolvedDateFrom == null || resolvedDateTo == null) {
+            Long durationMillis = getResolvedDuration(item, recordingScale);
+            if (durationMillis == null) {
                 rejectWith(itemId, L_INVALID_REQUEST);
                 return;
             }
-            Date dateTo = new Date(dateFrom.getTime() + (resolvedDateTo.getTime() - resolvedDateFrom.getTime()));
+            Date dateTo = new Date(dateFrom.getTime() + durationMillis.longValue());
 
             GanttChartItem proposal = scale.createGanttChartItem(row, item.getName(), item.getEntityId(), dateFrom, dateTo);
             GanttChartModifiableItem movedItem = (GanttChartModifiableItem) item;
@@ -481,9 +599,9 @@ public class GanttChartComponentState extends AbstractComponentState {
             movedItem.setFrom(proposal.getFrom());
             movedItem.setTo(proposal.getTo());
 
-            moveRequest = new GanttChartMoveRequest(item, row, payload.optString(L_ORIGINAL_ROW),
-                    payload.optString(L_ORIGINAL_NAME), payload.optString(L_ORIGINAL_DATE_FROM),
-                    payload.optString(L_ORIGINAL_DATE_TO), dateFrom, dateTo, context);
+            moveRequest = new GanttChartMoveRequest(item, row, payload.getText(L_ORIGINAL_ROW),
+                    payload.getText(L_ORIGINAL_NAME), payload.getText(L_ORIGINAL_DATE_FROM),
+                    payload.getText(L_ORIGINAL_DATE_TO), dateFrom, dateTo, context);
         }
 
         /**
@@ -491,50 +609,119 @@ public class GanttChartComponentState extends AbstractComponentState {
          *
          * @param args
          *            event arguments
-         * @return the payload, or null when the first argument is missing, is not a JSON object, or lacks a required key
+         * @return the payload, or null when {@code args} does not hold exactly one non-null element, when that element is not
+         *         one JSON object as read by {@link #readJsonObjectMembers(String)}, when {@code itemId} is not a JSON integer
+         *         within the {@code long} range, or when any key of {@link GanttChartComponentState#MOVE_PAYLOAD_TEXT_KEYS} is
+         *         missing or not a JSON string; other keys are ignored
          */
-        private JSONObject parseMovePayload(final String[] args) {
-            if (args == null || args.length == 0 || args[0] == null) {
+        private MovePayload parseMovePayload(final String[] args) {
+            if (args == null || args.length != 1 || args[0] == null) {
                 return null;
             }
-            JSONObject payload;
-            try {
-                payload = new JSONObject(args[0]);
-            } catch (JSONException e) {
+            Map<String, Object> members = readJsonObjectMembers(args[0]);
+            if (members == null) {
                 return null;
             }
-            for (String key : MOVE_PAYLOAD_KEYS) {
-                if (payload.isNull(key)) {
+            Object itemId = members.get(L_ITEM_ID);
+            if (!(itemId instanceof Long)) {
+                return null;
+            }
+            Map<String, String> textValues = new HashMap<String, String>();
+            for (String key : MOVE_PAYLOAD_TEXT_KEYS) {
+                Object value = members.get(key);
+                if (!(value instanceof String)) {
                     return null;
                 }
+                textValues.put(key, (String) value);
             }
-            return payload;
+            return new MovePayload((Long) itemId, textValues);
         }
 
         /**
-         * Reads the entity id of the moved item from the payload.
+         * Reads the members of a JSON object written in strict JSON syntax: double-quoted names and strings, no comments, no
+         * trailing commas, and decimal numbers without leading zeros.
          *
-         * @param payload
-         *            moveItem payload
-         * @return the entity id, or null when it is not a number
+         * @param text
+         *            JSON text
+         * @return the members by name, each value being a {@link String} for a JSON string, a {@link Long} for a JSON integer
+         *         within the {@code long} range, and the {@link JsonToken} of the value for any other value; null when the text
+         *         is not valid JSON, is not one JSON object, repeats a member name, or holds any content after the object
          */
-        private Long parseItemId(final JSONObject payload) {
+        private Map<String, Object> readJsonObjectMembers(final String text) {
             try {
-                return payload.getLong(L_ITEM_ID);
-            } catch (JSONException e) {
+                JsonParser parser = MOVE_PAYLOAD_JSON_FACTORY.createJsonParser(text);
+                try {
+                    return readJsonObjectMembers(parser);
+                } finally {
+                    parser.close();
+                }
+            } catch (IOException e) {
                 return null;
             }
         }
 
         /**
-         * Parses a wall-clock date in the {@value DateUtils#L_DATE_TIME_FORMAT} format.
+         * Reads the members of the JSON object the parser is positioned before.
+         *
+         * @param parser
+         *            parser positioned before the first token
+         * @return the members by name as described by {@link #readJsonObjectMembers(String)}, or null when the input is not one
+         *         JSON object, repeats a member name, or holds content after the object
+         * @throws IOException
+         *             when the input is not valid JSON
+         */
+        private Map<String, Object> readJsonObjectMembers(final JsonParser parser) throws IOException {
+            if (parser.nextToken() != JsonToken.START_OBJECT) {
+                return null;
+            }
+            Map<String, Object> members = new HashMap<String, Object>();
+            while (parser.nextToken() == JsonToken.FIELD_NAME) {
+                String name = parser.getCurrentName();
+                Object value = readJsonValue(parser, parser.nextToken());
+                if (members.containsKey(name)) {
+                    return null;
+                }
+                members.put(name, value);
+            }
+            if (parser.getCurrentToken() != JsonToken.END_OBJECT || parser.nextToken() != null) {
+                return null;
+            }
+            return members;
+        }
+
+        /**
+         * Reads the JSON value starting at the given token, skipping the children of an object or array.
+         *
+         * @param parser
+         *            parser positioned at the value's first token
+         * @param valueToken
+         *            first token of the value
+         * @return the text of a JSON string, the {@link Long} of a JSON integer within the {@code long} range, or the token
+         *         itself for any other value
+         * @throws IOException
+         *             when the value is not valid JSON
+         */
+        private Object readJsonValue(final JsonParser parser, final JsonToken valueToken) throws IOException {
+            if (valueToken == JsonToken.VALUE_STRING) {
+                return parser.getText();
+            }
+            if (valueToken == JsonToken.VALUE_NUMBER_INT && parser.getNumberType() != JsonParser.NumberType.BIG_INTEGER) {
+                return Long.valueOf(parser.getLongValue());
+            }
+            parser.skipChildren();
+            return valueToken;
+        }
+
+        /**
+         * Parses a wall-clock date written exactly in the {@value DateUtils#L_DATE_TIME_FORMAT} format, with four digits of
+         * year and two digits in every other field.
          *
          * @param value
          *            date text
-         * @return the wall-clock date, or null when the text is null or not a valid date
+         * @return the wall-clock date, or null when the text is null, has another form, or is not a valid date
          */
         private LocalDateTime parseWallClock(final String value) {
-            if (value == null) {
+            if (value == null || !MOVE_DATE_PATTERN.matcher(value).matches()) {
                 return null;
             }
             try {
@@ -554,26 +741,89 @@ public class GanttChartComponentState extends AbstractComponentState {
          */
         private Date toInstant(final LocalDateTime wallClock) {
             try {
-                return wallClock.toDateTime(DateTimeZone.forTimeZone(TimeZone.getDefault())).withEarlierOffsetAtOverlap()
-                        .toDate();
+                return wallClock.toDateTime(getDefaultZone()).withEarlierOffsetAtOverlap().toDate();
             } catch (IllegalArgumentException e) {
                 return null;
             }
         }
 
         /**
-         * Converts a date of a resolved item to an instant of the JVM default time zone.
+         * Returns the duration of a resolved item in milliseconds. When the item was created through the recording scale
+         * and its current dates are the recorded start and end read to the second in the JVM default time zone, the duration
+         * is the recorded end minus the recorded start. Otherwise it is the difference of the item's dates read in that time
+         * zone, provided each of them exists there with exactly one offset.
          *
-         * @param value
-         *            date text in the {@value DateUtils#L_DATE_TIME_FORMAT} format
-         * @return the instant, or null when the text is not a valid, existing date
+         * @param item
+         *            resolved item
+         * @param recordingScale
+         *            scale the item resolver received
+         * @return the duration, or null when a date of the item is missing or not a valid date in the
+         *         {@value DateUtils#L_DATE_TIME_FORMAT} format, or when an unrecorded date does not exist or occurs twice in
+         *         the time zone
          */
-        private Date parseResolvedDate(final String value) {
-            LocalDateTime wallClock = parseWallClock(value);
-            if (wallClock == null) {
+        private Long getResolvedDuration(final GanttChartItem item, final ItemBoundsRecordingScale recordingScale) {
+            LocalDateTime wallClockFrom = parseWallClock(item.getDateFrom());
+            LocalDateTime wallClockTo = parseWallClock(item.getDateTo());
+            if (wallClockFrom == null || wallClockTo == null) {
                 return null;
             }
-            return toInstant(wallClock);
+            DateTimeZone zone = getDefaultZone();
+            long[] recordedBounds = recordingScale.getRecordedBounds(item);
+            if (recordedBounds != null && wallClockFrom.equals(toWallClockSecond(recordedBounds[0], zone))
+                    && wallClockTo.equals(toWallClockSecond(recordedBounds[1], zone))) {
+                return Long.valueOf(recordedBounds[1] - recordedBounds[0]);
+            }
+            Date resolvedDateFrom = toUnambiguousInstant(wallClockFrom, zone);
+            Date resolvedDateTo = toUnambiguousInstant(wallClockTo, zone);
+            if (resolvedDateFrom == null || resolvedDateTo == null) {
+                return null;
+            }
+            return Long.valueOf(resolvedDateTo.getTime() - resolvedDateFrom.getTime());
+        }
+
+        /**
+         * Converts an instant to its wall-clock date in the given time zone, with the milliseconds set to 0.
+         *
+         * @param millis
+         *            instant in milliseconds since the epoch
+         * @param zone
+         *            time zone
+         * @return the wall-clock date to the second
+         */
+        private LocalDateTime toWallClockSecond(final long millis, final DateTimeZone zone) {
+            return new LocalDateTime(millis, zone).withMillisOfSecond(0);
+        }
+
+        /**
+         * Converts a wall-clock date to the one instant it denotes in the given time zone.
+         *
+         * @param wallClock
+         *            wall-clock date
+         * @param zone
+         *            time zone
+         * @return the instant, or null when the wall-clock date does not exist in the time zone or occurs twice in it
+         */
+        private Date toUnambiguousInstant(final LocalDateTime wallClock, final DateTimeZone zone) {
+            DateTime dateTime;
+            try {
+                dateTime = wallClock.toDateTime(zone);
+            } catch (IllegalArgumentException e) {
+                return null;
+            }
+            DateTime earlier = dateTime.withEarlierOffsetAtOverlap();
+            if (earlier.getMillis() != dateTime.withLaterOffsetAtOverlap().getMillis()) {
+                return null;
+            }
+            return earlier.toDate();
+        }
+
+        /**
+         * Returns the Joda-Time zone of the JVM default time zone.
+         *
+         * @return the JVM default time zone
+         */
+        private DateTimeZone getDefaultZone() {
+            return DateTimeZone.forTimeZone(TimeZone.getDefault());
         }
 
         /**
@@ -704,6 +954,144 @@ public class GanttChartComponentState extends AbstractComponentState {
 
             return collisionRow;
         }
+    }
+
+    /**
+     * Values of a moveItem payload that passed the syntax and type checks: the entity id of the moved item and the texts of
+     * the keys in {@link GanttChartComponentState#MOVE_PAYLOAD_TEXT_KEYS}.
+     */
+    private static final class MovePayload {
+
+        private final Long itemId;
+
+        private final Map<String, String> textValues;
+
+        /**
+         * Creates the payload values.
+         *
+         * @param itemId
+         *            entity id of the moved item
+         * @param textValues
+         *            texts by payload key
+         */
+        MovePayload(final Long itemId, final Map<String, String> textValues) {
+            this.itemId = itemId;
+            this.textValues = textValues;
+        }
+
+        /**
+         * Returns the entity id of the moved item.
+         *
+         * @return entity id
+         */
+        Long getItemId() {
+            return itemId;
+        }
+
+        /**
+         * Returns the text of a payload key.
+         *
+         * @param key
+         *            payload key
+         * @return the text
+         */
+        String getText(final String key) {
+            return textValues.get(key);
+        }
+
+    }
+
+    /**
+     * Chart scale handed to the item resolver by the moveItem event. Every call is delegated to the component's scale, and
+     * each item created through it is recorded with the start and end instants it was created from.
+     */
+    private static final class ItemBoundsRecordingScale implements GanttChartScale {
+
+        private final GanttChartScale delegate;
+
+        private final Map<GanttChartItem, long[]> boundsByItem = new IdentityHashMap<GanttChartItem, long[]>();
+
+        /**
+         * Creates the recording scale.
+         *
+         * @param delegate
+         *            scale that receives every call
+         */
+        ItemBoundsRecordingScale(final GanttChartScale delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Date getDateTo() {
+            return delegate.getDateTo();
+        }
+
+        @Override
+        public void setDateTo(final Date dateTo) {
+            delegate.setDateTo(dateTo);
+        }
+
+        @Override
+        public Date getDateFrom() {
+            return delegate.getDateFrom();
+        }
+
+        @Override
+        public void setDateFrom(final Date dateFrom) {
+            delegate.setDateFrom(dateFrom);
+        }
+
+        @Override
+        public GanttChartItem createGanttChartItem(final String rowName, final String name, final Long entityId,
+                final Date dateFrom, final Date dateTo) {
+            return record(delegate.createGanttChartItem(rowName, name, entityId, dateFrom, dateTo), dateFrom, dateTo);
+        }
+
+        @Override
+        public GanttChartItem createGanttChartItem(final String rowName, final String label, final GanttChartItemTooltip tooltip,
+                final Long entityId, final Date dateFrom, final Date dateTo) {
+            return record(delegate.createGanttChartItem(rowName, label, tooltip, entityId, dateFrom, dateTo), dateFrom, dateTo);
+        }
+
+        @Override
+        public Boolean getIsDatesSet() {
+            return delegate.getIsDatesSet();
+        }
+
+        @Override
+        public void setIsDatesSet(final Boolean isDatesSet) {
+            delegate.setIsDatesSet(isDatesSet);
+        }
+
+        /**
+         * Returns the start and end instants an item was created from.
+         *
+         * @param item
+         *            resolved item
+         * @return the start and end in milliseconds since the epoch, or null when the item was not created through this scale
+         */
+        long[] getRecordedBounds(final GanttChartItem item) {
+            return boundsByItem.get(item);
+        }
+
+        /**
+         * Records the item with the instants of the given start and end, when both are given.
+         *
+         * @param item
+         *            created item
+         * @param dateFrom
+         *            start the item was created from
+         * @param dateTo
+         *            end the item was created from
+         * @return the item
+         */
+        private GanttChartItem record(final GanttChartItem item, final Date dateFrom, final Date dateTo) {
+            if (dateFrom != null && dateTo != null) {
+                boundsByItem.put(item, new long[] { dateFrom.getTime(), dateTo.getTime() });
+            }
+            return item;
+        }
+
     }
 
 }

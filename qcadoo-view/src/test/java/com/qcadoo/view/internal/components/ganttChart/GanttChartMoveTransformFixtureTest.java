@@ -37,6 +37,7 @@ import java.io.InputStreamReader;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.TimeZone;
@@ -64,6 +65,11 @@ import com.qcadoo.view.internal.components.ganttChart.GanttChartScaleImpl.ZoomLe
  * start in cells, and the fixture must hold a non-DST entry for every {@link ZoomLevel}. Fixtures in {@code Europe/Warsaw} on
  * daylight-saving change days are checked for wall-clock placement across the change.
  * <p>
+ * The resource must hold exactly the eight fixtures of {@code EXPECTED_FIXTURE_NAMES}, each once and with the zoom level, time
+ * zone, daylight-saving transition and target count at the same index of the {@code EXPECTED_*} arrays, 44 targets in all. Only
+ * {@code OFF_GRID_TARGET} lies off the move grid, and the {@code H1} and {@code D1} fixtures in {@code Europe/Warsaw} cover both
+ * the spring-forward gap at {@code NONEXISTENT_WALL_CLOCK} and the fall-back overlap at {@code REPEATED_WALL_CLOCK}.
+ * <p>
  * Each test switches the JVM and Joda-Time default zones to the fixture's zone; {@link #init()} starts every test in UTC and
  * {@link #restore()} restores the zones found before the test.
  */
@@ -84,6 +90,50 @@ public class GanttChartMoveTransformFixtureTest {
     private static final String SPRING_FORWARD = "springForward";
 
     private static final String FALL_BACK = "fallBack";
+
+    private static final String H1_UTC = "H1-UTC";
+
+    private static final String H3_UTC = "H3-UTC";
+
+    private static final String H6_UTC = "H6-UTC";
+
+    private static final String D1_UTC = "D1-UTC";
+
+    private static final String H1_DST_SPRING_FORWARD = "H1-Europe/Warsaw-springForward";
+
+    private static final String H1_DST_FALL_BACK = "H1-Europe/Warsaw-fallBack";
+
+    private static final String D1_DST_SPRING_FORWARD = "D1-Europe/Warsaw-springForward";
+
+    private static final String D1_DST_FALL_BACK = "D1-Europe/Warsaw-fallBack";
+
+    private static final int EXPECTED_FIXTURE_COUNT = 8;
+
+    private static final int EXPECTED_TARGET_COUNT = 44;
+
+    private static final String[] EXPECTED_FIXTURE_NAMES = { H1_UTC, H3_UTC, H6_UTC, D1_UTC, H1_DST_SPRING_FORWARD,
+            H1_DST_FALL_BACK, D1_DST_SPRING_FORWARD, D1_DST_FALL_BACK };
+
+    private static final ZoomLevel[] EXPECTED_ZOOM_LEVELS = { ZoomLevel.H1, ZoomLevel.H3, ZoomLevel.H6, ZoomLevel.D1,
+            ZoomLevel.H1, ZoomLevel.H1, ZoomLevel.D1, ZoomLevel.D1 };
+
+    private static final String[] EXPECTED_TIME_ZONES = { UTC_ZONE, UTC_ZONE, UTC_ZONE, UTC_ZONE, DST_ZONE, DST_ZONE, DST_ZONE,
+            DST_ZONE };
+
+    private static final String[] EXPECTED_DST_TRANSITIONS = { null, null, null, null, SPRING_FORWARD, FALL_BACK, SPRING_FORWARD,
+            FALL_BACK };
+
+    private static final int[] EXPECTED_TARGET_COUNTS = { 7, 6, 6, 6, 5, 5, 5, 4 };
+
+    private static final String[] SPRING_FORWARD_FIXTURE_NAMES = { H1_DST_SPRING_FORWARD, D1_DST_SPRING_FORWARD };
+
+    private static final String[] FALL_BACK_FIXTURE_NAMES = { H1_DST_FALL_BACK, D1_DST_FALL_BACK };
+
+    private static final String OFF_GRID_TARGET = H1_UTC + " / 2026-06-01 10:07:00";
+
+    private static final String NONEXISTENT_WALL_CLOCK = "2026-03-29 02:30:00";
+
+    private static final String REPEATED_WALL_CLOCK = "2026-10-25 02:30:00";
 
     private static final String ROW_NAME = "row";
 
@@ -126,6 +176,7 @@ public class GanttChartMoveTransformFixtureTest {
         // given
         JSONArray fixtures = loadFixtures();
         int checkedTargets = 0;
+        List<String> offGridTargets = new ArrayList<String>();
 
         for (int i = 0; i < fixtures.length(); i++) {
             JSONObject fixture = fixtures.getJSONObject(i);
@@ -161,11 +212,16 @@ public class GanttChartMoveTransformFixtureTest {
                 assertEquals(describe(fixture, target, "onGrid"), target.getBoolean("onGrid"),
                         isOnGrid(targetWallClock, gridMinutes));
 
+                if (!target.getBoolean("onGrid")) {
+                    offGridTargets.add(fixture.getString("name") + " / " + dateFrom);
+                }
+
                 checkedTargets++;
             }
         }
 
-        assertTrue("No fixture target was checked", checkedTargets >= 1);
+        assertEquals("Checked fixture targets", EXPECTED_TARGET_COUNT, checkedTargets);
+        assertEquals("Off-grid fixture targets", Collections.singletonList(OFF_GRID_TARGET), offGridTargets);
     }
 
     @Test
@@ -181,6 +237,8 @@ public class GanttChartMoveTransformFixtureTest {
         }
 
         // then
+        assertFixtureSet(fixtures);
+
         for (int i = 0; i < zoomLevels.length; i++) {
             if (nonDstFixtures[i] == null) {
                 fail("No non-DST fixture for zoom level " + zoomLevels[i]);
@@ -202,8 +260,8 @@ public class GanttChartMoveTransformFixtureTest {
         // given
         JSONArray fixtures = loadFixtures();
         List<JSONObject> dstFixtures = new ArrayList<JSONObject>();
-        int springForwardFixtures = 0;
-        int fallBackFixtures = 0;
+        List<String> springForwardFixtures = new ArrayList<String>();
+        List<String> fallBackFixtures = new ArrayList<String>();
 
         for (int i = 0; i < fixtures.length(); i++) {
             JSONObject fixture = fixtures.getJSONObject(i);
@@ -213,19 +271,21 @@ public class GanttChartMoveTransformFixtureTest {
 
                 if (DST_ZONE.equals(fixture.getString("timeZone"))) {
                     if (SPRING_FORWARD.equals(fixture.getString("dstTransition"))) {
-                        springForwardFixtures++;
+                        springForwardFixtures.add(fixture.getString("name"));
                     } else if (FALL_BACK.equals(fixture.getString("dstTransition"))) {
-                        fallBackFixtures++;
+                        fallBackFixtures.add(fixture.getString("name"));
                     }
                 }
             }
         }
 
-        assertTrue("No " + DST_ZONE + " " + SPRING_FORWARD + " fixture", springForwardFixtures >= 1);
-        assertTrue("No " + DST_ZONE + " " + FALL_BACK + " fixture", fallBackFixtures >= 1);
+        assertEquals("Fixtures with a dstTransition", SPRING_FORWARD_FIXTURE_NAMES.length + FALL_BACK_FIXTURE_NAMES.length,
+                dstFixtures.size());
+        assertFixtureNames(DST_ZONE + " " + SPRING_FORWARD + " fixtures", SPRING_FORWARD_FIXTURE_NAMES, springForwardFixtures);
+        assertFixtureNames(DST_ZONE + " " + FALL_BACK + " fixtures", FALL_BACK_FIXTURE_NAMES, fallBackFixtures);
 
-        int checkedGaps = 0;
-        int checkedOverlaps = 0;
+        List<String> checkedGaps = new ArrayList<String>();
+        List<String> checkedOverlaps = new ArrayList<String>();
 
         for (JSONObject fixture : dstFixtures) {
             GanttChartScaleImpl scale = createScale(fixture);
@@ -260,6 +320,7 @@ public class GanttChartMoveTransformFixtureTest {
             if (hasValue(fixture, "nonexistentWallClock")) {
                 String nonexistentWallClock = fixture.getString("nonexistentWallClock");
 
+                assertEquals(fixture.getString("name") + ": nonexistentWallClock", NONEXISTENT_WALL_CLOCK, nonexistentWallClock);
                 assertTrue(fixture.getString("name") + ": " + nonexistentWallClock + " lies in a gap",
                         zone.isLocalDateTimeGap(wallClock(nonexistentWallClock)));
 
@@ -268,23 +329,69 @@ public class GanttChartMoveTransformFixtureTest {
                             nonexistentWallClock.equals(targets.getJSONObject(j).getString("dateFrom")));
                 }
 
-                checkedGaps++;
+                checkedGaps.add(fixture.getString("name"));
             }
 
             if (hasValue(fixture, "repeatedWallClock")) {
                 String repeatedWallClock = fixture.getString("repeatedWallClock");
+
+                assertEquals(fixture.getString("name") + ": repeatedWallClock", REPEATED_WALL_CLOCK, repeatedWallClock);
+
                 long earlierOccurrence = wallClock(repeatedWallClock).toDateTime(zone).withEarlierOffsetAtOverlap().getMillis();
                 long laterOccurrence = wallClock(repeatedWallClock).toDateTime(zone).withLaterOffsetAtOverlap().getMillis();
 
                 assertEquals(fixture.getString("name") + ": " + repeatedWallClock + " occurs twice, one hour apart",
                         MILLIS_PER_HOUR, laterOccurrence - earlierOccurrence);
 
-                checkedOverlaps++;
+                checkedOverlaps.add(fixture.getString("name"));
             }
         }
 
-        assertTrue("No nonexistentWallClock was checked", checkedGaps >= 1);
-        assertTrue("No repeatedWallClock was checked", checkedOverlaps >= 1);
+        assertFixtureNames("Fixtures with a checked nonexistentWallClock", SPRING_FORWARD_FIXTURE_NAMES, checkedGaps);
+        assertFixtureNames("Fixtures with a checked repeatedWallClock", FALL_BACK_FIXTURE_NAMES, checkedOverlaps);
+    }
+
+    /**
+     * Asserts that the fixtures are exactly the expected fixture set: {@code EXPECTED_FIXTURE_COUNT} fixtures, each name of
+     * {@code EXPECTED_FIXTURE_NAMES} occurring once with the zoom level, time zone, daylight-saving transition and target count
+     * at the same index of the {@code EXPECTED_*} arrays, and {@code EXPECTED_TARGET_COUNT} targets in all.
+     */
+    private void assertFixtureSet(final JSONArray fixtures) throws JSONException {
+        assertEquals("Fixture count", EXPECTED_FIXTURE_COUNT, fixtures.length());
+
+        int targetCount = 0;
+
+        for (int i = 0; i < EXPECTED_FIXTURE_NAMES.length; i++) {
+            String name = EXPECTED_FIXTURE_NAMES[i];
+            JSONObject fixture = findFixtureByName(fixtures, name);
+            int targets = fixture.getJSONArray("targets").length();
+
+            assertEquals(name + ": zoomLevel", EXPECTED_ZOOM_LEVELS[i].name(), fixture.getString("zoomLevel"));
+            assertEquals(name + ": timeZone", EXPECTED_TIME_ZONES[i], fixture.getString("timeZone"));
+
+            if (EXPECTED_DST_TRANSITIONS[i] == null) {
+                assertTrue(name + ": dstTransition is null", fixture.isNull("dstTransition"));
+            } else {
+                assertEquals(name + ": dstTransition", EXPECTED_DST_TRANSITIONS[i], fixture.getString("dstTransition"));
+            }
+
+            assertEquals(name + ": target count", EXPECTED_TARGET_COUNTS[i], targets);
+
+            targetCount += targets;
+        }
+
+        assertEquals("Target count of all fixtures", EXPECTED_TARGET_COUNT, targetCount);
+    }
+
+    /**
+     * Asserts that the names are the expected names, each occurring once, in any order.
+     */
+    private void assertFixtureNames(final String description, final String[] expectedNames, final List<String> names) {
+        assertEquals(description + ": count in " + names, expectedNames.length, names.size());
+
+        for (String expectedName : expectedNames) {
+            assertTrue(description + ": " + expectedName + " in " + names, names.contains(expectedName));
+        }
     }
 
     private void assertFixtureParameters(final JSONObject fixture, final ZoomLevel zoomLevel) throws JSONException {
@@ -380,6 +487,27 @@ public class GanttChartMoveTransformFixtureTest {
     }
 
     /**
+     * Returns the fixture with the given name, failing unless exactly one fixture has that name.
+     */
+    private JSONObject findFixtureByName(final JSONArray fixtures, final String name) throws JSONException {
+        JSONObject found = null;
+        int occurrences = 0;
+
+        for (int i = 0; i < fixtures.length(); i++) {
+            JSONObject fixture = fixtures.getJSONObject(i);
+
+            if (name.equals(fixture.getString("name"))) {
+                found = fixture;
+                occurrences++;
+            }
+        }
+
+        assertEquals("Fixtures named " + name, 1, occurrences);
+
+        return found;
+    }
+
+    /**
      * Sets the JVM and Joda-Time default zones to the given zone.
      */
     private void useZone(final String timeZoneId) {
@@ -468,4 +596,3 @@ public class GanttChartMoveTransformFixtureTest {
     }
 
 }
-

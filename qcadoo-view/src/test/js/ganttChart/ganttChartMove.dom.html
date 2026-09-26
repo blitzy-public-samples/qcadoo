@@ -42,7 +42,11 @@
       window.__calls                       recorded events, each {eventName, component, args}
       window.__messages                    messages passed to mainController.showMessage
       window.__nextMoveResponse            answer of the next moveItem: {kind: 'rejected', message},
-                                           {kind: 'accepted', board} or {kind: 'failure'}
+                                           {kind: 'accepted', board} or {kind: 'failure'}; with hold: true the
+                                           moveItem is recorded and its answer waits for window.__releaseHeldMove()
+      window.__releaseHeldMove()           answers the held moveItem after a zero delay, with the generation check and
+                                           the __seq and __lastResponseApplied bookkeeping of every answer; returns
+                                           false after recording a fixture error when no moveItem is held
       window.__lastResponseApplied         {eventName, seq} of the last answered event, or null
       window.__currentBoard                board content answered to refresh and initialize
       window.__pageErrors                  uncaught errors, unhandled rejections, asset load failures and fixture errors
@@ -247,6 +251,9 @@
 
             // Increments on every board load; answers scheduled under an earlier value are dropped.
             var generation = 0;
+
+            // Answer of the held moveItem, run by window.__releaseHeldMove, or null.
+            var heldMoveAnswer = null;
 
             window.__gantt = null;
             window.__calls = [];
@@ -660,6 +667,29 @@
                 }
             }
 
+            // Returns whether the next moveItem answer is held until window.__releaseHeldMove().
+            function isMoveAnswerHeld(eventName) {
+                return eventName === "moveItem" && !!window.__nextMoveResponse
+                    && window.__nextMoveResponse.hold === true;
+            }
+
+            // Stores the answer of a moveItem as the held answer. The answer is dropped when a board is loaded before
+            // it runs; otherwise it answers the event and records the answer in window.__lastResponseApplied.
+            function holdMoveAnswer(completeFunction, args) {
+                var callGeneration = generation;
+                heldMoveAnswer = function () {
+                    if (callGeneration !== generation || !window.__gantt) {
+                        return;
+                    }
+                    try {
+                        answerEvent("moveItem", completeFunction, args);
+                    } finally {
+                        window.__seq += 1;
+                        window.__lastResponseApplied = {eventName: "moveItem", seq: window.__seq};
+                    }
+                };
+            }
+
             // Recording stub of QCD.PageController: callEvent and showMessage.
             window.mainController = {
                 // Records an event call, then answers it after a zero delay and records the answer in
@@ -670,6 +700,10 @@
                         component: component,
                         args: args ? Array.prototype.slice.call(args) : null
                     });
+                    if (isMoveAnswerHeld(eventName)) {
+                        holdMoveAnswer(completeFunction, args);
+                        return;
+                    }
                     var callGeneration = generation;
                     setTimeout(function () {
                         if (callGeneration !== generation || !window.__gantt) {
@@ -697,6 +731,7 @@
                 var boardOverrides = overrides || {};
 
                 generation += 1;
+                heldMoveAnswer = null;
                 window.__calls = [];
                 window.__messages = [];
                 window.__lastResponseApplied = null;
@@ -716,6 +751,19 @@
             // Returns a mutable deep copy of the board content of a name.
             window.__boardFor = function (name) {
                 return deepCopy(boardDefinition(name).board);
+            };
+
+            // Runs the held moveItem answer after a zero delay and returns true, or records a fixture error and returns
+            // false when no moveItem is held.
+            window.__releaseHeldMove = function () {
+                if (!heldMoveAnswer) {
+                    recordFixtureError("No held moveItem answer to release");
+                    return false;
+                }
+                var answer = heldMoveAnswer;
+                heldMoveAnswer = null;
+                setTimeout(answer, 0);
+                return true;
             };
 
             window.__boards = deepFreeze(deepCopy(boards));
