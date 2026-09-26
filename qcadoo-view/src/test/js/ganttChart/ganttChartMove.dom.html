@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<!--
+
+    ***************************************************************************
+    Copyright (c) 2010 Qcadoo Limited
+    Project: Qcadoo Framework
+    Version: 1.4
+
+    This file is part of Qcadoo.
+
+    Qcadoo is free software; you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as published
+    by the Free Software Foundation; either version 3 of the License,
+    or (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty
+    of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+    See the GNU Affero General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with this program; if not, write to the Free Software
+    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+    ***************************************************************************
+
+-->
+<!--
+    DOM fixture of the Gantt chart component for ganttChartMove.dom.test.js, opened from file:// in chrome-headless-shell.
+
+    The head loads every stylesheet and script of the uncompressed branch of WEB-INF/jsp/crud/crudView.jsp, in the same
+    order, from src/main/resources/qcadooView/public. The body holds a fixed 800 x 300 px host into which
+    window.__loadBoard(name, overrides) renders the component.jsp and ganttChart.jsp markup of window.mainTab.gantt and
+    constructs QCD.components.elements.GanttChart the way pageConstructor.js does. window.mainController is a recording
+    stub that answers every event with canned values after a zero delay.
+
+    Page API:
+      window.__loadBoard(name, overrides)  renders board `name`; overrides.options and overrides.board replace keys of the
+                                           component options and of the board content
+      window.__boards                      frozen board definitions, each {options, board}
+      window.__boardFor(name)              mutable deep copy of the board content of `name`
+      window.__gantt                       the constructed GanttChart component
+      window.__calls                       recorded events, each {eventName, component, args}
+      window.__messages                    messages passed to mainController.showMessage
+      window.__nextMoveResponse            answer of the next moveItem: {kind: 'rejected', message},
+                                           {kind: 'accepted', board} or {kind: 'failure'}
+      window.__lastResponseApplied         {eventName, seq} of the last answered event, or null
+      window.__currentBoard                board content answered to refresh and initialize
+      window.__pageErrors                  uncaught errors, unhandled rejections, asset load failures and fixture errors
+
+    Boards: h1, h3, h6, d1, offGrid, covered, markupRows, dst, scrolled, moveDisabled.
+
+    After each answer that unblocks the component, the blockUI overlay of LoadingIndicator fades out for 400 ms and
+    stays over the chart until no .blockUI element remains inside window.mainTab.gantt.
+-->
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Gantt chart move - DOM fixture</title>
+
+    <script type="text/javascript">
+        // Records uncaught errors, unhandled promise rejections and stylesheet or script load failures as
+        // {message, source, line, column}.
+        window.__pageErrors = [];
+        window.onerror = function (message, source, line, column) {
+            window.__pageErrors.push({
+                message: String(message),
+                source: source || null,
+                line: line || null,
+                column: column || null
+            });
+            return false;
+        };
+        window.addEventListener("unhandledrejection", function (event) {
+            var reason = event.reason;
+            window.__pageErrors.push({
+                message: (reason && reason.message) ? String(reason.message) : String(reason),
+                source: null,
+                line: null,
+                column: null
+            });
+        });
+        window.addEventListener("error", function (event) {
+            var target = event.target;
+            if (target && (target.tagName === "SCRIPT" || target.tagName === "LINK")) {
+                window.__pageErrors.push({
+                    message: "Failed to load " + target.tagName.toLowerCase() + " asset",
+                    source: target.src || target.href || null,
+                    line: null,
+                    column: null
+                });
+            }
+        }, true);
+    </script>
+
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/core/_jquery-ui-1.8.5.custom.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/jquery.datepick.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/core/ui.jqgrid.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/jstree/style.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/core/qcd.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/core/menu/style.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/core/notification.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/core/lib/jquery.bubblepopup.v2.3.1.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/components/window.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/components/grid.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/components/form.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/components/layout.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/components/tree.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/components/elementHeader.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/components/awesomeDynamicList.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/components/gantt.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/crud/components/contextualHelpButton.css" type="text/css" />
+    <link rel="stylesheet" href="../../../main/resources/qcadooView/public/css/custom.css" type="text/css" />
+
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery-1.8.3.min.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/json_sans_eval.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/json2.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery.blockUI.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery.jqGrid.min.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery.searchFilter.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery.jstree.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery.cookie.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery-ui-1.11.4.min.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery-ui-i18n.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery.pnotify.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery.form.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery.maskedinput-1.3.min.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/encoder.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery.shorten.min.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/qcd/utils/logger.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/qcd/utils/serializator.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/qcd/utils/connector.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/qcd/utils/multiUpload.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/qcd/utils/options.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/qcd/utils/pageConstructor.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/qcd/utils/modal.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/qcd/core/messagesController.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/core/pageController.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/core/actionEvaluator.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/core/tabController.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/component.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/container.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/containers/layout/layout.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/containers/window.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/containers/windowTab.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/containers/form.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/contextualHelpButton.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/utils/elementHeaderUtils.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/utils/loadingIndicator.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/formComponent.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/grid.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/grid/gridHeader.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/textInput.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/timeInput.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/hiddenInput.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/file.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/textArea.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/passwordInput.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/dynamicComboBox.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/entityComboBox.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/lookup.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/lookup/lookupDropdown.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/checkBox.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/linkButton.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/tree.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/calendar.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/staticComponent.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/awesomeDynamicList.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/ribbon.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/gantt/ganttChart.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/gantt/ganttChartHeader.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/crud/qcd/components/elements/inputWithAction.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/lib/jquery.scannerdetection.js"></script>
+    <script type="text/javascript" src="../../../main/resources/qcadooView/public/js/core/qcd/utils/base64.min.js"></script>
+
+    <script type="text/javascript">
+        // Page globals of crudView.jsp with the values of the production and maintenance Gantt view.
+        var viewName = "productionMaintenanceGantt";
+        var pluginIdentifier = "cmmsMachineParts";
+        var context = '';
+        var locale = 'en';
+        var hasDataDefinition = true;
+        var popup = false;
+        var controller = null;
+    </script>
+</head>
+<body>
+
+    <div id="ganttHost" style="position:absolute; left:0; top:0; width:800px; height:300px;"></div>
+
+    <script type="text/javascript">
+        (function () {
+            "use strict";
+
+            var GANTT_PATH = "window.mainTab.gantt";
+            var GANTT_JS_OBJECT = "QCD.components.elements.GanttChart";
+            var HOST_ID = "ganttHost";
+            var HOST_WIDTH = 800;
+            var HOST_HEIGHT = 300;
+            var FIXTURE_SOURCE = "ganttChartMove.dom.html";
+            var DEFAULT_MOVE_RESPONSE = {kind: "rejected", message: "Rejected by fixture"};
+
+            // Hours spanned by one chart cell per zoom level.
+            var HOURS_INTERVALS = {H1: 1, H3: 3, H6: 6, D1: 24};
+
+            // Cells per day category and label step per hour-based zoom level.
+            var HOUR_SCALES = {
+                H1: {elementsInCategory: 24, elementLabelsInterval: 1},
+                H3: {elementsInCategory: 8, elementLabelsInterval: 3},
+                H6: {elementsInCategory: 4, elementLabelsInterval: 6}
+            };
+
+            var WEEK_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+            var MAINTENANCE_STRIP = {color: "#F5A623", size: 100};
+
+            // Component options of window.mainTab.gantt: the GanttChartComponentPattern.getJsOptions keys and the
+            // base component pattern keys.
+            var BASE_OPTIONS = {
+                translations: {
+                    "header.label": "Gantt",
+                    "header.dateFrom": "From",
+                    "header.dateTo": "To",
+                    "header.zoom1h": "1h",
+                    "header.zoom3h": "3h",
+                    "header.zoom6h": "6h",
+                    "header.zoom1d": "1d",
+                    "description.dateFrom": "Start",
+                    "description.dateTo": "End",
+                    "colisionElementName": "Collision",
+                    "colisionBox.header": "Overlapping items",
+                    "colisionBox.closeButton": "Close",
+                    "move.rejectedHeader": "Move rejected"
+                },
+                hasPopupInfo: true,
+                allowDateSelection: true,
+                allowItemMove: true,
+                moveGridMinutes: 30,
+                zoomHoursIntervals: {H1: 1, H3: 3, H6: 6, D1: 24},
+                listeners: [GANTT_PATH],
+                defaultEnabled: true,
+                defaultRequired: false,
+                defaultVisible: true,
+                referenceName: "gantt",
+                persistent: false,
+                scriptFiles: []
+            };
+
+            // Increments on every board load; answers scheduled under an earlier value are dropped.
+            var generation = 0;
+
+            window.__gantt = null;
+            window.__calls = [];
+            window.__messages = [];
+            window.__seq = 0;
+            window.__lastResponseApplied = null;
+            window.__currentBoard = null;
+            window.__nextMoveResponse = deepCopy(DEFAULT_MOVE_RESPONSE);
+
+            // Returns a JSON deep copy of a value.
+            function deepCopy(value) {
+                return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+            }
+
+            // Freezes an object and every object it contains.
+            function deepFreeze(value) {
+                if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+                    Object.keys(value).forEach(function (key) {
+                        deepFreeze(value[key]);
+                    });
+                    Object.freeze(value);
+                }
+                return value;
+            }
+
+            // Records an error of the fixture itself in window.__pageErrors.
+            function recordFixtureError(message) {
+                window.__pageErrors.push({message: message, source: FIXTURE_SOURCE, line: null, column: null});
+            }
+
+            // Returns wall-clock minutes since 1970-01-01 00:00:00 of a "yyyy-MM-dd" or "yyyy-MM-dd HH:mm:ss" date.
+            function wallClockMinutes(text) {
+                var match = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}):(\d{2}))?$/.exec(text);
+                if (!match) {
+                    throw new Error("Not a wall-clock date: " + text);
+                }
+                return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4] || 0),
+                    Number(match[5] || 0), Number(match[6] || 0)) / 60000;
+            }
+
+            // Returns the "yyyy-MM-dd" date of wall-clock minutes.
+            function formatDay(minutes) {
+                return new Date(minutes * 60000).toISOString().substring(0, 10);
+            }
+
+            // Returns the ISO day of week, 1 for Monday to 7 for Sunday, of a "yyyy-MM-dd" date.
+            function isoWeekDay(day) {
+                var weekDay = new Date(wallClockMinutes(day) * 60000).getUTCDay();
+                return weekDay === 0 ? 7 : weekDay;
+            }
+
+            // Returns the chart cell position of a date: wall-clock hours since the scale start divided by the hours
+            // interval, truncated to 0.1 cell.
+            function cellPosition(date, hoursInterval, scaleStart) {
+                var minutes = wallClockMinutes(date) - wallClockMinutes(scaleStart);
+                return Math.floor(minutes * 10 / (hoursInterval * 60)) / 10;
+            }
+
+            // Builds a Gantt item in the GanttChartItemImpl JSON shape; an item without an id has no id key.
+            function item(row, id, name, start, end, hoursInterval, scaleStart, strips) {
+                var ganttItem = {row: row};
+                if (id !== null && id !== undefined) {
+                    ganttItem.id = id;
+                }
+                ganttItem.from = cellPosition(start, hoursInterval, scaleStart);
+                ganttItem.to = cellPosition(end, hoursInterval, scaleStart);
+                ganttItem.info = {
+                    name: name,
+                    tooltip: {header: name, content: []},
+                    dateFrom: start,
+                    dateTo: end
+                };
+                ganttItem.strips = deepCopy(strips || []);
+                return ganttItem;
+            }
+
+            // Builds a collision item over the given items in the GanttChartConflictItem JSON shape, spanning the
+            // bounds of the covering item.
+            function collision(row, bounds, items) {
+                return {
+                    row: row,
+                    from: bounds.from,
+                    to: bounds.to,
+                    info: {
+                        dateFrom: bounds.info.dateFrom,
+                        dateTo: bounds.info.dateTo,
+                        tooltip: {content: []}
+                    },
+                    strips: [],
+                    items: deepCopy(items)
+                };
+            }
+
+            // Returns one "yyyy-MM-dd" category per day from dateFrom to dateTo inclusive.
+            function dayCategories(dateFrom, dateTo) {
+                var categories = [];
+                var last = wallClockMinutes(dateTo);
+                for (var minutes = wallClockMinutes(dateFrom); minutes <= last; minutes += 24 * 60) {
+                    categories.push(formatDay(minutes));
+                }
+                return categories;
+            }
+
+            // Builds the GanttChartScaleImpl JSON of an hour-based zoom level with one category per day.
+            function hourScale(zoomLevel, dateFrom, dateTo) {
+                return {
+                    elementsInCategory: HOUR_SCALES[zoomLevel].elementsInCategory,
+                    elementLabelsInterval: HOUR_SCALES[zoomLevel].elementLabelsInterval,
+                    elementLabelInitialNumber: 0,
+                    categories: dayCategories(dateFrom, dateTo)
+                };
+            }
+
+            // Builds the GanttChartScaleImpl JSON of the D1 zoom level with the given week categories.
+            function weekScale(dateFrom, dateTo, weekLabels) {
+                return {
+                    elementsInCategory: 7,
+                    elementLabelsValues: WEEK_DAY_LABELS.slice(),
+                    firstCategoryFirstElement: isoWeekDay(dateFrom),
+                    lastCategoryLastElement: isoWeekDay(dateTo),
+                    categories: weekLabels.slice()
+                };
+            }
+
+            // Builds board content in the GanttChartComponentState.renderContent JSON shape.
+            function board(zoomLevel, dateFrom, dateTo, scale, rows, items, collisions) {
+                return {
+                    zoomLevel: zoomLevel,
+                    dateFrom: dateFrom,
+                    dateTo: dateTo,
+                    scale: scale,
+                    stripsOrientation: "horizontal",
+                    itemsBorderWidth: 1,
+                    rows: rows.slice(),
+                    items: items,
+                    collisions: collisions || []
+                };
+            }
+
+            // Builds the order bar of an H1 board on 2026-06-01.
+            function orderBarH1(row, id, name, start, end) {
+                return item(row, id, name, "2026-06-01 " + start, "2026-06-01 " + end, HOURS_INTERVALS.H1, "2026-06-01");
+            }
+
+            // Builds the id-less maintenance bar PE-1 of an H1 board on L2, 2026-06-01 12:00-14:00.
+            function maintenanceBarH1() {
+                return item("L2", null, "PE-1", "2026-06-01 12:00:00", "2026-06-01 14:00:00", HOURS_INTERVALS.H1,
+                    "2026-06-01", [MAINTENANCE_STRIP]);
+            }
+
+            // Returns the row names L01 to L<count>, numbered with two digits.
+            function numberedRows(count) {
+                var rows = [];
+                for (var i = 1; i <= count; i++) {
+                    rows.push("L" + (i < 10 ? "0" : "") + i);
+                }
+                return rows;
+            }
+
+            var LINES = ["L1", "L2", "L3"];
+
+            var coveringOrder = orderBarH1("L1", 11, "ORD-11", "09:00:00", "12:00:00");
+            var coveredOrder = orderBarH1("L1", 12, "ORD-12", "10:00:00", "11:00:00");
+
+            // Board definitions, each {options, board}: options replace component option keys and board is the
+            // content answered to refresh.
+            var boards = {
+                h1: {
+                    options: {},
+                    board: board("H1", "2026-06-01", "2026-06-01", hourScale("H1", "2026-06-01", "2026-06-01"), LINES, [
+                        orderBarH1("L1", 7, "ORD-7", "09:00:00", "10:00:00"),
+                        maintenanceBarH1()
+                    ])
+                },
+                h3: {
+                    options: {},
+                    board: board("H3", "2026-06-01", "2026-06-03", hourScale("H3", "2026-06-01", "2026-06-03"), LINES, [
+                        item("L1", 7, "ORD-7", "2026-06-01 09:00:00", "2026-06-01 12:00:00", HOURS_INTERVALS.H3, "2026-06-01")
+                    ])
+                },
+                h6: {
+                    options: {},
+                    board: board("H6", "2026-06-01", "2026-06-03", hourScale("H6", "2026-06-01", "2026-06-03"), LINES, [
+                        item("L1", 7, "ORD-7", "2026-06-01 06:00:00", "2026-06-01 12:00:00", HOURS_INTERVALS.H6, "2026-06-01")
+                    ])
+                },
+                d1: {
+                    options: {},
+                    board: board("D1", "2026-06-01", "2026-06-07", weekScale("2026-06-01", "2026-06-07", ["Week 23"]), LINES, [
+                        item("L1", 7, "ORD-7", "2026-06-02 00:00:00", "2026-06-03 00:00:00", HOURS_INTERVALS.D1, "2026-06-01")
+                    ])
+                },
+                offGrid: {
+                    options: {},
+                    board: board("H1", "2026-06-01", "2026-06-01", hourScale("H1", "2026-06-01", "2026-06-01"), LINES, [
+                        orderBarH1("L1", 8, "ORD-8", "10:07:00", "11:07:00"),
+                        maintenanceBarH1()
+                    ])
+                },
+                covered: {
+                    options: {},
+                    board: board("H1", "2026-06-01", "2026-06-01", hourScale("H1", "2026-06-01", "2026-06-01"), LINES,
+                        [coveringOrder, coveredOrder], [collision("L1", coveredOrder, [coveringOrder, coveredOrder])])
+                },
+                markupRows: {
+                    options: {},
+                    board: board("H1", "2026-06-01", "2026-06-01", hourScale("H1", "2026-06-01", "2026-06-01"),
+                        ["<b>L&amp;1</b>", "L2", "L3"], [
+                            orderBarH1("L2", 7, "ORD-7", "09:00:00", "10:00:00"),
+                            maintenanceBarH1()
+                        ])
+                },
+                dst: {
+                    options: {},
+                    board: board("H1", "2026-03-29", "2026-03-29", hourScale("H1", "2026-03-29", "2026-03-29"), LINES, [
+                        item("L1", 7, "ORD-7", "2026-03-29 01:30:00", "2026-03-29 03:30:00", HOURS_INTERVALS.H1, "2026-03-29")
+                    ])
+                },
+                scrolled: {
+                    options: {},
+                    board: board("H1", "2026-06-01", "2026-06-04", hourScale("H1", "2026-06-01", "2026-06-04"), numberedRows(20), [
+                        item("L12", 21, "ORD-21", "2026-06-02 10:00:00", "2026-06-02 11:00:00", HOURS_INTERVALS.H1, "2026-06-01")
+                    ])
+                },
+                moveDisabled: {
+                    options: {allowItemMove: false},
+                    board: board("H1", "2026-06-01", "2026-06-01", hourScale("H1", "2026-06-01", "2026-06-01"), LINES, [
+                        orderBarH1("L1", 7, "ORD-7", "09:00:00", "10:00:00"),
+                        maintenanceBarH1()
+                    ])
+                }
+            };
+
+            // Returns the board definition of a name, or throws for an unknown name.
+            function boardDefinition(name) {
+                if (!Object.prototype.hasOwnProperty.call(boards, name)) {
+                    throw new Error("Unknown board: " + name + "; boards: " + Object.keys(boards).join(", "));
+                }
+                return boards[name];
+            }
+
+            // Merges option sources over a deep copy of the base options; translations are merged key by key.
+            function mergeOptions(base) {
+                var merged = deepCopy(base);
+                for (var sourceIndex = 1; sourceIndex < arguments.length; sourceIndex++) {
+                    var source = arguments[sourceIndex] || {};
+                    Object.keys(source).forEach(function (key) {
+                        if (key === "translations" && source[key] !== null && typeof source[key] === "object") {
+                            Object.keys(source[key]).forEach(function (translationKey) {
+                                merged.translations[translationKey] = source[key][translationKey];
+                            });
+                        } else {
+                            merged[key] = deepCopy(source[key]);
+                        }
+                    });
+                }
+                return merged;
+            }
+
+            // Returns the board content of a definition with the keys of the override content replaced.
+            function mergeBoard(boardContent, overrideContent) {
+                var merged = deepCopy(boardContent);
+                if (overrideContent) {
+                    Object.keys(overrideContent).forEach(function (key) {
+                        merged[key] = deepCopy(overrideContent[key]);
+                    });
+                }
+                return merged;
+            }
+
+            // Builds the component.jsp and ganttChart.jsp markup for window.mainTab.gantt inside the host.
+            function buildComponentMarkup(options) {
+                var optionsJson = JSON.stringify(options);
+                if (/[&<>]/.test(optionsJson)) {
+                    throw new Error("Component options must not contain &, < or >: " + optionsJson);
+                }
+
+                var componentElement = document.createElement("div");
+                componentElement.id = GANTT_PATH;
+                componentElement.className = "component";
+                componentElement.style.height = "100%";
+
+                var jsObjectElement = document.createElement("div");
+                jsObjectElement.className = "element_js_object";
+                jsObjectElement.style.display = "none";
+                jsObjectElement.textContent = GANTT_JS_OBJECT;
+
+                var optionsElement = document.createElement("div");
+                optionsElement.className = "element_options";
+                optionsElement.style.display = "none";
+                optionsElement.textContent = optionsJson;
+
+                var ganttElement = document.createElement("div");
+                ganttElement.className = "component component_element component_element_ganttChart";
+                ganttElement.id = GANTT_PATH;
+
+                componentElement.appendChild(jsObjectElement);
+                componentElement.appendChild(optionsElement);
+                componentElement.appendChild(ganttElement);
+                document.getElementById(HOST_ID).appendChild(componentElement);
+                return componentElement;
+            }
+
+            // Resolves a dotted global name, such as QCD.components.elements.GanttChart, to its constructor.
+            function resolveConstructor(className) {
+                var resolved = window;
+                className.split(".").forEach(function (part) {
+                    resolved = (resolved !== null && resolved !== undefined) ? resolved[part] : undefined;
+                });
+                if (typeof resolved !== "function") {
+                    throw new Error("No component constructor named " + className);
+                }
+                return resolved;
+            }
+
+            // Constructs the component of window.mainTab.gantt as pageConstructor.js does, sizes it to the host and
+            // runs its initialization, which sends refresh.
+            function constructGantt() {
+                var element = $(document.getElementById(GANTT_PATH));
+                var jsObjectElement = element.children(".element_js_object");
+                var jsObjectClassName = $.trim(jsObjectElement.html());
+                jsObjectElement.remove();
+
+                var ComponentConstructor = resolveConstructor(jsObjectClassName);
+                window.__gantt = new ComponentConstructor(element, window.mainController);
+                window.__gantt.updateSize(HOST_WIDTH, HOST_HEIGHT);
+                window.__gantt.performInitialize();
+            }
+
+            // Builds the component value that pageController.setValueData passes to component.setValue; without
+            // content the value has no content key.
+            function valueWrapper(content) {
+                var value = {enabled: true, visible: true, permanentlyDisabled: false, messages: []};
+                if (content !== undefined) {
+                    value.content = content;
+                }
+                return value;
+            }
+
+            // Answers an event as a successful response: runs the complete function, then sets the component value.
+            function answerSuccess(completeFunction, value) {
+                if (completeFunction) {
+                    completeFunction();
+                }
+                window.__gantt.setValue(value);
+            }
+
+            // Answers an event as a failed request: runs only the complete function.
+            function answerFailure(completeFunction) {
+                if (completeFunction) {
+                    completeFunction();
+                }
+            }
+
+            // Returns the itemId of a moveItem payload, or null after recording a fixture error when the payload is
+            // not a JSON object string.
+            function readMoveItemId(args) {
+                try {
+                    var payload = JSON.parse(args[0]);
+                    if (payload !== null && typeof payload === "object") {
+                        return payload.itemId === undefined ? null : payload.itemId;
+                    }
+                } catch (e) {
+                    recordFixtureError("moveItem payload is not JSON: " + e.message);
+                    return null;
+                }
+                recordFixtureError("moveItem payload is not a JSON object: " + String(args && args[0]));
+                return null;
+            }
+
+            // Answers moveItem with the canned rejected, accepted or failed response of window.__nextMoveResponse.
+            function answerMoveItem(completeFunction, args) {
+                var itemId = readMoveItemId(args || []);
+                var response = window.__nextMoveResponse || DEFAULT_MOVE_RESPONSE;
+                var moveResult;
+                if (response.kind === "rejected") {
+                    moveResult = {itemId: itemId, accepted: false};
+                    if (response.message !== undefined && response.message !== null) {
+                        moveResult.message = response.message;
+                    }
+                    answerSuccess(completeFunction, valueWrapper({moveResult: moveResult}));
+                } else if (response.kind === "accepted") {
+                    if (!response.board || typeof response.board !== "object") {
+                        recordFixtureError("Accepted moveItem response has no board");
+                        answerFailure(completeFunction);
+                        return;
+                    }
+                    var content = deepCopy(response.board);
+                    content.moveResult = {itemId: itemId, accepted: true};
+                    window.__currentBoard = deepCopy(response.board);
+                    answerSuccess(completeFunction, valueWrapper(content));
+                    window.__gantt.updateSize(HOST_WIDTH, HOST_HEIGHT);
+                } else if (response.kind === "failure") {
+                    answerFailure(completeFunction);
+                } else {
+                    recordFixtureError("Unknown moveItem response kind: " + String(response.kind));
+                    answerFailure(completeFunction);
+                }
+            }
+
+            // Answers refresh and initialize with the current board, moveItem with the canned response, and every
+            // other event, select included, with a value without content.
+            function answerEvent(eventName, completeFunction, args) {
+                if (eventName === "refresh" || eventName === "initialize") {
+                    answerSuccess(completeFunction, valueWrapper(deepCopy(window.__currentBoard)));
+                    window.__gantt.updateSize(HOST_WIDTH, HOST_HEIGHT);
+                } else if (eventName === "moveItem") {
+                    answerMoveItem(completeFunction, args);
+                } else {
+                    answerSuccess(completeFunction, valueWrapper());
+                }
+            }
+
+            // Recording stub of QCD.PageController: callEvent and showMessage.
+            window.mainController = {
+                // Records an event call, then answers it after a zero delay and records the answer in
+                // window.__lastResponseApplied.
+                callEvent: function (eventName, component, completeFunction, args, actionsPerformer, type) {
+                    window.__calls.push({
+                        eventName: eventName,
+                        component: component,
+                        args: args ? Array.prototype.slice.call(args) : null
+                    });
+                    var callGeneration = generation;
+                    setTimeout(function () {
+                        if (callGeneration !== generation || !window.__gantt) {
+                            return;
+                        }
+                        try {
+                            answerEvent(eventName, completeFunction, args);
+                        } finally {
+                            window.__seq += 1;
+                            window.__lastResponseApplied = {eventName: eventName, seq: window.__seq};
+                        }
+                    }, 0);
+                },
+
+                // Records a message.
+                showMessage: function (message) {
+                    window.__messages.push(message);
+                }
+            };
+
+            // Renders a board: rebuilds the host markup with the merged options, sets the current board, resets the
+            // recorded calls, messages, last answer and next moveItem response, and constructs the component.
+            window.__loadBoard = function (name, overrides) {
+                var definition = boardDefinition(name);
+                var boardOverrides = overrides || {};
+
+                generation += 1;
+                window.__calls = [];
+                window.__messages = [];
+                window.__lastResponseApplied = null;
+                window.__nextMoveResponse = deepCopy(DEFAULT_MOVE_RESPONSE);
+                window.__currentBoard = mergeBoard(definition.board, boardOverrides.board);
+                window.__gantt = null;
+
+                var host = document.getElementById(HOST_ID);
+                while (host.firstChild) {
+                    host.removeChild(host.firstChild);
+                }
+
+                buildComponentMarkup(mergeOptions(BASE_OPTIONS, definition.options, boardOverrides.options));
+                constructGantt();
+            };
+
+            // Returns a mutable deep copy of the board content of a name.
+            window.__boardFor = function (name) {
+                return deepCopy(boardDefinition(name).board);
+            };
+
+            window.__boards = deepFreeze(deepCopy(boards));
+        }());
+    </script>
+
+</body>
+</html>
