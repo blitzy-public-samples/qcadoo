@@ -1993,7 +1993,7 @@ const CASES = [
                 + ' return {text: help.textContent, className: help.className, parentId: help.parentNode.id,'
                 + ' position: computed.position, width: computed.width, height: computed.height,'
                 + ' overflow: computed.overflow, clip: computed.clip,'
-                + ' count: document.querySelectorAll("#ganttHost .ganttChartVisuallyHidden").length}; }())';
+                + ' count: document.querySelectorAll("#ganttHost .ganttChartMoveHelp").length}; }())';
             const noAttributes = { tabindex: null, role: null, label: null, describedBy: null };
             await withFocus(async () => {
                 await openBoard('h1', A11Y_OVERRIDES);
@@ -2005,7 +2005,7 @@ const CASES = [
                 const help = await evaluate(helpStateExpr);
                 assert.deepEqual(help, {
                     text: KEYBOARD_HELP_30,
-                    className: 'ganttChartVisuallyHidden',
+                    className: 'ganttChartMoveHelp',
                     parentId: GANTT_ID,
                     position: 'absolute',
                     width: '1px',
@@ -2059,7 +2059,7 @@ const CASES = [
                 assert.deepEqual(await a11yAttributes(barExpr(7)), noAttributes, 'moveDisabled bar 7');
                 assert.deepEqual(await a11yAttributes(MAINTENANCE_BAR_EXPR), noAttributes, 'moveDisabled maintenance bar');
                 assert.equal(await evaluate(helpExpr + ' === null'), true, 'keyboard help without item moves');
-                assert.equal(await evaluate('document.querySelectorAll("#ganttHost .ganttChartVisuallyHidden,'
+                assert.equal(await evaluate('document.querySelectorAll("#ganttHost .ganttChartMoveHelp,'
                     + ' #ganttHost .ganttChartLiveRegion").length'), 0);
             });
             await assertNoPageErrors();

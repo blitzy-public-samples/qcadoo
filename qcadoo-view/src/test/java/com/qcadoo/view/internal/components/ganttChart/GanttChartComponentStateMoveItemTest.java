@@ -1983,7 +1983,7 @@ public class GanttChartComponentStateMoveItemTest {
      * request with a null item id, before the resolver runs; the same payload in strict syntax is accepted.
      */
     @Test
-    public final void shouldRejectPayloadThatIsNotOneStrictJsonObject() throws Exception {
+    public final void shouldRejectMalformedPayload() throws Exception {
         // given
         GanttChartModifiableItem item = mockModifiableItem(MOVED_ITEM_ID, ORIGINAL_DATE_FROM, ORIGINAL_DATE_TO);
         stubResolverWith(boardWithOriginRowItem(item));

@@ -280,7 +280,13 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         RIGHT_SCROLL_WIDTH: 17,
         BOTTOM_SCROLL_HEIGHT: 16,
         // Milliseconds after the end of a drag during which a click on the dragged item is ignored.
-        CLICK_SUPPRESSION_MS: 1000
+        CLICK_SUPPRESSION_MS: 1000,
+        // Inline z-index of the focused draggable item and of a draggable item with the ganttItemDragging class, and the
+        // outline and outline offset of the focus ring of a draggable item.
+        FOCUSED_ITEM_Z_INDEX: "220",
+        DRAGGING_ITEM_Z_INDEX: "230",
+        FOCUS_RING_OUTLINE: "2px solid #000000",
+        FOCUS_RING_OFFSET: "-2px"
     };
 
     var keyCodes = {
@@ -322,7 +328,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     // originRow, originIndex, preDragLeft, preDragTop, startX, startY, dateFrom, dateTo, hoursInterval, targetDate and
     // targetRow. A keyboard move also holds steps, the number of grid steps from the original start, positive to the
     // right, and rowIndex, the index of its target row.
-    var dragState = null;
+    var dragState = null,
+        // DOM element of the draggable item that has the focus, or null.
+        focusedItemNode = null;
 
     // Dropped item awaiting the moveItem response, or null. Fields: element, preDragLeft, preDragTop and itemId.
     var pendingMove = null;
@@ -678,12 +686,14 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         collisionInfoBox.append(collisionInfoBoxHeader);
         collisionInfoBox.append(collisionInfoBoxContent);
 
-        // On charts that allow item moves, a visually hidden element of the chart element holds the keyboard move
-        // instructions that describe every draggable item; without an instructions text there is no such element.
+        // On charts that allow item moves, an element of the chart element with the ganttChartMoveHelp class, hidden
+        // visually by the inline GanttChartVisuallyHiddenStyle map, holds the keyboard move instructions that describe
+        // every draggable item; without an instructions text there is no such element.
         if (_this.options.allowItemMove === true) {
             var keyboardHelpText = getKeyboardHelpText();
             if (keyboardHelpText.length > 0) {
-                htmlElements.moveHelp = $("<div>").addClass("ganttChartVisuallyHidden");
+                htmlElements.moveHelp = $("<div>").addClass("ganttChartMoveHelp");
+                htmlElements.moveHelp.css(QCD.components.elements.GanttChartVisuallyHiddenStyle);
                 htmlElements.moveHelp.attr("id", _this.elementPath + "_moveHelp");
                 htmlElements.moveHelp.text(keyboardHelpText);
                 element.append(htmlElements.moveHelp);
@@ -939,7 +949,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }
 
         // Draggable items get the ganttItemDraggable class, the move cursor, the pointer drag handlers, the button role,
-        // tab stop and accessible name and description, and the keyboard move handlers.
+        // tab stop and accessible name and description, the keyboard move handlers, and the focus and blur handlers that
+        // set the inline z-index of the focused item and its inline focus ring; the focus ring is updated again after
+        // every key pressed on the item.
         if (moveTransform.isDraggable(item, isCollision, _this.options.allowItemMove, moveHoursInterval, constants.CELL_WIDTH, _this.options.moveGridMinutes)) {
             itemElement.addClass("ganttItemDraggable");
             itemElement.css("cursor", "move");
@@ -961,11 +973,17 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
                 "lostpointercapture": onLostPointerCapture,
                 "keydown": function (eventObj) {
                     onItemKeyDown(eventObj, item, itemElement);
+                    updateItemFocusRing(itemElement);
                 },
                 "blur": function () {
                     onItemBlur(itemElement);
                 }
             });
+            // The focus handler is a native listener: it runs once the item holds the focus, also when jQuery triggers
+            // the focus.
+            itemElement[0].addEventListener("focus", function () {
+                onItemFocus(itemElement);
+            }, false);
         }
 
         itemElement.mouseover(function () {
@@ -1152,9 +1170,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
      * row. A horizontal step is refused when its target start does not parse, when a step to the left would draw the item
      * starting before the content area of the chart, and when a step to the right would draw it starting at or after the
      * end of that area; an item drawn starting before the content area can still step to the right. An applied step
-     * stores the target, gives the item the ganttItemDragging class, places it at the target as a drag does, scrolls it
-     * into view, writes the target row and date to the tooltip body and its status live region, and shows the tooltip
-     * centred below the item.
+     * stores the target, gives the item the ganttItemDragging class and the inline z-index of the drag layer with
+     * setItemDragging, places it at the target as a drag does, scrolls it into view, writes the target row and date to
+     * the tooltip body and its status live region, and shows the tooltip centred below the item.
      *
      * @param keyCode key code of an arrow key
      * @returns true when the step is applied, false when it is refused, which changes nothing
@@ -1195,7 +1213,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         dragState.rowIndex = rowIndex;
         dragState.targetDate = date;
         dragState.targetRow = rows[rowIndex];
-        dragState.element.addClass("ganttItemDragging");
+        setItemDragging(dragState.element, true);
         dragState.element.css("left", (parseFloat(dragState.preDragLeft) + deltaPx) + "px");
         dragState.element.css("top", (1 + (rowIndex - dragState.originIndex) * constants.CELL_HEIGHT) + "px");
 
@@ -1235,13 +1253,78 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     }
 
     /**
-     * Cancels the keyboard move of an item that loses the focus.
+     * Records a draggable item that receives the focus as the focused item, then gives it the inline z-index of
+     * updateItemLayer and the focus ring of updateItemFocusRing.
+     *
+     * @param itemElement element of the item
+     */
+    function onItemFocus(itemElement) {
+        focusedItemNode = itemElement[0];
+        updateItemLayer(itemElement);
+        updateItemFocusRing(itemElement);
+    }
+
+    /**
+     * Handles a draggable item that loses the focus: clears the focused item when it is this item, cancels the keyboard
+     * move of the item, and then updates its inline z-index with updateItemLayer, which keeps the drag layer only while
+     * the item still has the ganttItemDragging class, and removes its focus ring with updateItemFocusRing.
      *
      * @param itemElement element of the item
      */
     function onItemBlur(itemElement) {
+        if (focusedItemNode === itemElement[0]) {
+            focusedItemNode = null;
+        }
         if (dragState && dragState.phase === "keyboard" && dragState.element[0] === itemElement[0]) {
             cancelKeyboardMove();
+        }
+        updateItemLayer(itemElement);
+        updateItemFocusRing(itemElement);
+    }
+
+    /**
+     * Returns whether a DOM element matches the :focus-visible selector, read with its matches, msMatchesSelector or
+     * webkitMatchesSelector method.
+     *
+     * @param node DOM element
+     * @returns the result of the match; true when the element has none of those methods or when the match throws, as it
+     *          does in a browser that does not support :focus-visible
+     */
+    function matchesFocusVisible(node) {
+        var matches = node.matches || node.msMatchesSelector || node.webkitMatchesSelector;
+        if (typeof matches !== "function") {
+            return true;
+        }
+        try {
+            return matches.call(node, ":focus-visible");
+        } catch (selectorError) {
+            return true;
+        }
+    }
+
+    /**
+     * Sets the inline focus ring of a draggable item. While the item is the focused item, its inline outline offset is
+     * constants.FOCUS_RING_OFFSET, and its inline outline is constants.FOCUS_RING_OUTLINE when it matches :focus-visible
+     * according to matchesFocusVisible and none otherwise. An item that is not the focused item loses both inline
+     * values. An empty set changes nothing.
+     *
+     * @param itemElement element of the item
+     */
+    function updateItemFocusRing(itemElement) {
+        var itemNode = itemElement[0];
+        if (!itemNode) {
+            return;
+        }
+        if (itemNode === focusedItemNode) {
+            itemElement.css({
+                "outline": matchesFocusVisible(itemNode) ? constants.FOCUS_RING_OUTLINE : "none",
+                "outline-offset": constants.FOCUS_RING_OFFSET
+            });
+        } else {
+            itemElement.css({
+                "outline": "",
+                "outline-offset": ""
+            });
         }
     }
 
@@ -1326,9 +1409,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
 
     /**
      * Follows the pointer of the current press. A pending press becomes an active drag once the pointer has travelled
-     * DRAG_THRESHOLD_PX on either axis; the item then gets the ganttItemDragging class and the hover tooltip is hidden. An
-     * active drag moves the item to the snapped target. A pointermove of the tracked pointer without finite coordinates
-     * abandons the press or drag.
+     * DRAG_THRESHOLD_PX on either axis; the item then gets the ganttItemDragging class and the inline z-index of the drag
+     * layer with setItemDragging, and the hover tooltip is hidden. An active drag moves the item to the snapped target. A
+     * pointermove of the tracked pointer without finite coordinates abandons the press or drag.
      *
      * @param eventObj pointermove event
      */
@@ -1347,7 +1430,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
                 return;
             }
             dragState.phase = "active";
-            dragState.element.addClass("ganttItemDragging");
+            setItemDragging(dragState.element, true);
             ganttTooltip.hide();
         }
         updateDragTarget(oe);
@@ -1566,15 +1649,50 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
 
     /**
      * Sets the left and top of the state's element to the preDragLeft and preDragTop stored in the state, leaving a
-     * coordinate whose stored value is undefined unchanged, and removes the ganttItemDragging class. For a pending move,
-     * rebindPendingMove may have replaced the stored values with the coordinates of a re-rendered element.
+     * coordinate whose stored value is undefined unchanged, and removes the ganttItemDragging class and the inline
+     * z-index of the drag layer with setItemDragging, which leaves the focused item at the inline z-index of a focused
+     * item. For a pending move, rebindPendingMove may have replaced the stored values with the coordinates of a
+     * re-rendered element.
      *
      * @param state drag state or pending move holding element, preDragLeft and preDragTop
      */
     function restoreItemPosition(state) {
         state.element.css("left", state.preDragLeft);
         state.element.css("top", state.preDragTop);
-        state.element.removeClass("ganttItemDragging");
+        setItemDragging(state.element, false);
+    }
+
+    /**
+     * Adds the ganttItemDragging class to a draggable item, or removes it, and then sets the item's inline z-index with
+     * updateItemLayer. It is the only code that adds or removes that class.
+     *
+     * @param itemElement element of the item; an empty set changes nothing
+     * @param isDragging true to add the class, false to remove it
+     */
+    function setItemDragging(itemElement, isDragging) {
+        itemElement.toggleClass("ganttItemDragging", isDragging);
+        updateItemLayer(itemElement);
+    }
+
+    /**
+     * Sets the inline z-index of a draggable item: constants.DRAGGING_ITEM_Z_INDEX while it has the ganttItemDragging
+     * class, otherwise constants.FOCUSED_ITEM_Z_INDEX while it is the focused item, otherwise none, which leaves the
+     * z-index of the stylesheet. An empty set changes nothing.
+     *
+     * @param itemElement element of the item
+     */
+    function updateItemLayer(itemElement) {
+        var itemNode = itemElement[0];
+        if (!itemNode) {
+            return;
+        }
+        if (itemElement.hasClass("ganttItemDragging")) {
+            itemElement.css("z-index", constants.DRAGGING_ITEM_Z_INDEX);
+        } else if (itemNode === focusedItemNode) {
+            itemElement.css("z-index", constants.FOCUSED_ITEM_Z_INDEX);
+        } else {
+            itemElement.css("z-index", "");
+        }
     }
 
     /**
@@ -1724,6 +1842,28 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     constructor();
 };
 
+/**
+ * Inline CSS map, passed to jQuery's css method, that hides an element visually while keeping it rendered and in the
+ * accessibility tree: the element is positioned absolutely as a 1 x 1 px box with a -1px margin, no padding and no
+ * border, clipped to nothing, its text kept on one line, and it never receives pointer events. The Gantt chart applies it
+ * to its keyboard move instructions element and to the live regions of its tooltip.
+ *
+ * Example: $("<div>").css(QCD.components.elements.GanttChartVisuallyHiddenStyle) gives an element that screen readers
+ * read and that is not shown.
+ */
+QCD.components.elements.GanttChartVisuallyHiddenStyle = {
+    "position": "absolute",
+    "width": "1px",
+    "height": "1px",
+    "margin": "-1px",
+    "padding": "0",
+    "border": "0",
+    "overflow": "hidden",
+    "clip": "rect(0 0 0 0)",
+    "white-space": "nowrap",
+    "pointer-events": "none"
+};
+
 QCD.components.elements.GanttChartTooltip = function (_element) {
 
     var element = _element;
@@ -1756,7 +1896,8 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
     }
 
     /**
-     * Appends to the chart element an empty, visually hidden and atomic live region that the pointer never hits.
+     * Appends to the chart element an empty and atomic live region, hidden visually and from the pointer by the inline
+     * GanttChartVisuallyHiddenStyle map.
      *
      * @param role ARIA role of the region
      * @param politeness aria-live value of the region
@@ -1769,18 +1910,7 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
             "aria-live": politeness,
             "aria-atomic": "true"
         });
-        region.css({
-            "position": "absolute",
-            "width": "1px",
-            "height": "1px",
-            "margin": "-1px",
-            "padding": "0",
-            "border": "0",
-            "overflow": "hidden",
-            "clip": "rect(0 0 0 0)",
-            "white-space": "nowrap",
-            "pointer-events": "none"
-        });
+        region.css(QCD.components.elements.GanttChartVisuallyHiddenStyle);
         element.append(region);
         return region;
     }
