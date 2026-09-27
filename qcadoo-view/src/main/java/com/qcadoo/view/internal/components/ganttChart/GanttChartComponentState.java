@@ -218,6 +218,23 @@ public class GanttChartComponentState extends AbstractComponentState {
         return selectedEntityId;
     }
 
+    /**
+     * Returns the text of a value of the component context this request carries, as {@link JSONObject#optString(String)}
+     * gives it: a string as it is, and a number or boolean as its text; for example {@code 12} gives {@code "12"}.
+     *
+     * @param key
+     *            key of the context value
+     * @return the text of the value, or null when the request carries no context, or the context holds no value or
+     *         {@link JSONObject#NULL} under the key
+     */
+    public String getContextValue(final String key) {
+        if (context == null || context.isNull(key)) {
+            return null;
+        }
+
+        return context.optString(key);
+    }
+
     @Override
     protected void initializeContent(final JSONObject json) throws JSONException {
 

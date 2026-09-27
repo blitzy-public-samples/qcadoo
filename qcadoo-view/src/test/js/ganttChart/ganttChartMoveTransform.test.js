@@ -29,15 +29,87 @@
  *
  * The script under test is loaded from qcadooView/public/js/crud/qcd/components/elements/gantt/ganttChart.js, and the
  * forward cell positions come from src/test/resources/ganttChart/moveTransformFixtures.json.
+ *
+ * test is a local function over node:test's test, with the variants test.skip, test.todo and test.only. It records
+ * every test it declares and marks the test started when its body begins. A root after() hook sets process.exitCode
+ * to 1 and fails the run with the error "<k> of <n> top-level tests never started: ..." naming each recorded test whose
+ * body never started, whether a --test-name-pattern, --test-skip-pattern or --test-only option, a runner configuration
+ * file, a skip option or test.skip excluded it.
  */
 'use strict';
 
-const { test } = require('node:test');
+const { test: nodeTest, after } = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const url = require('node:url');
+
+// Tests declared through test(), test.skip(), test.todo() and test.only(), in declaration order, each {name, started}.
+const declaredTests = [];
+
+// Declares a test through the given node:test declaration function with the arguments of test([name][, options][, fn]),
+// records it in declaredTests and marks it started when its body begins. The body receives the same `this` and
+// arguments, and its return value, parameter count and name are kept. Returns what the declaration function returns.
+function declareTest(declare, name, options, fn) {
+    let body = fn;
+    let testOptions = options;
+    if (typeof name === 'function') {
+        body = name;
+    } else if (name !== null && typeof name === 'object') {
+        body = options;
+        testOptions = name;
+    } else if (typeof options === 'function') {
+        body = options;
+        testOptions = undefined;
+    }
+    if (typeof body !== 'function') {
+        body = undefined;
+    }
+    const testName = typeof name === 'string' && name !== '' ? name : (body && body.name) || '<anonymous>';
+
+    const record = { name: testName, started: false };
+    declaredTests.push(record);
+    const run = function () {
+        record.started = true;
+        return body === undefined ? undefined : body.apply(this, arguments);
+    };
+    Object.defineProperty(run, 'length', { value: body === undefined ? 0 : body.length });
+    Object.defineProperty(run, 'name', { value: body === undefined ? '' : body.name });
+    return declare(testName, testOptions, run);
+}
+
+// Declares a test through node:test's test() and records it in declaredTests.
+function test(name, options, fn) {
+    return declareTest(nodeTest, name, options, fn);
+}
+
+// Declares a test through node:test's test.skip() and records it in declaredTests.
+test.skip = function skip(name, options, fn) {
+    return declareTest(nodeTest.skip, name, options, fn);
+};
+
+// Declares a test through node:test's test.todo() and records it in declaredTests.
+test.todo = function todo(name, options, fn) {
+    return declareTest(nodeTest.todo, name, options, fn);
+};
+
+// Declares a test through node:test's test.only() and records it in declaredTests.
+test.only = function only(name, options, fn) {
+    return declareTest(nodeTest.only, name, options, fn);
+};
+
+// After the last test of the file, sets process.exitCode to 1 and throws an error naming every declared test whose body
+// never started; returns without either when every body started.
+after(() => {
+    const neverStarted = declaredTests.filter((record) => !record.started);
+    if (neverStarted.length === 0) {
+        return;
+    }
+    process.exitCode = 1;
+    throw new Error(neverStarted.length + ' of ' + declaredTests.length + ' top-level tests never started: '
+        + neverStarted.map((record) => JSON.stringify(record.name)).join(', '));
+});
 
 // Absolute path of the Gantt chart script under test.
 const SCRIPT_PATH = path.resolve(__dirname,

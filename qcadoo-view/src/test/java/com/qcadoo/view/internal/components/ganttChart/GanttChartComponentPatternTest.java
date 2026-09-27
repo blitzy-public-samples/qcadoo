@@ -64,9 +64,9 @@ import com.qcadoo.view.internal.components.ganttChart.GanttChartScaleImpl.ZoomLe
 /**
  * Tests of the item-move options of {@link GanttChartComponentPattern}: parsing of the {@code allowItemMove} view option; the
  * {@code allowItemMove}, {@code moveGridMinutes}, {@code zoomHoursIntervals} entries of the component's JavaScript options; its
- * {@code move.rejectedHeader}, {@code move.keyboardHelp}, {@code move.acceptedAnnouncement} and
- * {@code move.cancelledAnnouncement} translation entries; and the definition of the last three keys in every
- * {@code qcadooView} locale bundle.
+ * {@code move.rejectedHeader}, {@code move.keyboardHelp}, {@code move.acceptedAnnouncement},
+ * {@code move.cancelledAnnouncement} and {@code move.releaseToCancel} translation entries; and the definition of the last
+ * four keys in every {@code qcadooView} locale bundle.
  */
 public class GanttChartComponentPatternTest {
 
@@ -88,9 +88,14 @@ public class GanttChartComponentPatternTest {
 
     private static final String CANCELLED_ANNOUNCEMENT_KEY = "move.cancelledAnnouncement";
 
-    /** Translation keys, relative to the component's translation path, of the keyboard move help and move announcements. */
+    private static final String RELEASE_TO_CANCEL_KEY = "move.releaseToCancel";
+
+    /**
+     * Translation keys, relative to the component's translation path, of the keyboard move help, the move announcements and
+     * the drag tooltip text shown while the pointer lies outside the drop area.
+     */
     private static final String[] KEYBOARD_MOVE_AND_ANNOUNCEMENT_KEYS = { KEYBOARD_HELP_KEY, ACCEPTED_ANNOUNCEMENT_KEY,
-            CANCELLED_ANNOUNCEMENT_KEY };
+            CANCELLED_ANNOUNCEMENT_KEY, RELEASE_TO_CANCEL_KEY };
 
     /** Locale suffixes of the qcadooView locale bundles. */
     private static final String[] BUNDLE_LOCALES = { "en", "pl", "de", "fr", "cn" };

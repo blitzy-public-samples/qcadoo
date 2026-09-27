@@ -66,7 +66,9 @@
       window.__currentBoard                board content answered to refresh and initialize
       window.__pageErrors                  uncaught errors, unhandled rejections, asset load failures and fixture errors
 
-    Boards: h1, h3, h6, d1, offGrid, covered, markupRows, dst, scrolled, moveDisabled.
+    Boards: h1, h3, h6, d1, offGrid, covered, markupRows, dst, scrolled, moveDisabled, approved, labels, neighbours. The
+    approved board holds only the id-less, one-hour order bar ORD-31 of a position of an approved schedule, too narrow to
+    show its full label.
 
     After each answer that unblocks the component, the blockUI overlay of LoadingIndicator fades out for 400 ms and
     stays over the chart until no .blockUI element remains inside window.mainTab.gridLayout.gantt.
@@ -245,9 +247,10 @@
             var MAINTENANCE_STRIP = {color: "#2E86C1", size: 100};
 
             // Component options of window.mainTab.gridLayout.gantt: the GanttChartComponentPattern.getJsOptions keys
-            // with a subset of its translations, and the base component pattern keys. The translations lack
-            // move.keyboardHelp, move.acceptedAnnouncement and move.cancelledAnnouncement, which
-            // ganttChartMove.dom.test.js adds through the A11Y_OVERRIDES options of window.__loadBoard.
+            // with a subset of its translations, and the base component pattern keys. The translations hold
+            // move.rejectedHeader and move.releaseToCancel with their qcadooView_en values and lack move.keyboardHelp,
+            // move.acceptedAnnouncement and move.cancelledAnnouncement, which ganttChartMove.dom.test.js adds through
+            // the A11Y_OVERRIDES options of window.__loadBoard.
             var BASE_OPTIONS = {
                 translations: {
                     "header.label": "Gantt",
@@ -262,7 +265,8 @@
                     "colisionElementName": "Collision",
                     "colisionBox.header": "Overlapping items",
                     "colisionBox.closeButton": "Close",
-                    "move.rejectedHeader": "Move rejected"
+                    "move.rejectedHeader": "Move rejected",
+                    "move.releaseToCancel": "Outside the chart. Release to cancel the move."
                 },
                 hasPopupInfo: true,
                 allowDateSelection: true,
@@ -432,10 +436,24 @@
                 return item(row, id, name, "2026-06-01 " + start, "2026-06-01 " + end, HOURS_INTERVALS.H1, "2026-06-01");
             }
 
-            // Builds the id-less maintenance bar PE-1 of an H1 board on L2, 2026-06-01 12:00-14:00.
+            // Builds the id-less maintenance bar PE-1 of an H1 board on L2, 2026-06-01 12:00-14:00, with the type and
+            // state line and the requires-shutdown line of ProductionMaintenanceGanttChartItemResolver as its tooltip
+            // content, the type HTML-escaped as the resolver escapes it.
             function maintenanceBarH1() {
-                return item("L2", null, "PE-1", "2026-06-01 12:00:00", "2026-06-01 14:00:00", HOURS_INTERVALS.H1,
+                var ganttItem = item("L2", null, "PE-1", "2026-06-01 12:00:00", "2026-06-01 14:00:00", HOURS_INTERVALS.H1,
                     "2026-06-01", [MAINTENANCE_STRIP]);
+                ganttItem.info.tooltip.content = ["Type: Inspection &amp; cleaning, state: New", "Requires shutdown: yes"];
+                return ganttItem;
+            }
+
+            // Builds the id-less order bar ORD-31 of a position of an approved schedule on an H1 board on L1,
+            // 2026-06-01 09:00-10:00, one 25 px cell wide, with the product line of
+            // ProductionMaintenanceGanttChartItemResolver as its tooltip content, HTML-escaped as the resolver escapes it.
+            function approvedOrderBarH1() {
+                var ganttItem = item("L1", null, "ORD-31", "2026-06-01 09:00:00", "2026-06-01 10:00:00", HOURS_INTERVALS.H1,
+                    "2026-06-01");
+                ganttItem.info.tooltip.content = ["Product: PRD-31 - Bolt &amp; nut"];
+                return ganttItem;
             }
 
             // Returns the row names L01 to L<count>, numbered with two digits.
@@ -451,6 +469,23 @@
 
             var coveringOrder = orderBarH1("L1", 11, "ORD-11", "09:00:00", "12:00:00");
             var coveredOrder = orderBarH1("L1", 12, "ORD-12", "10:00:00", "11:00:00");
+
+            // Rows of the labels board: fifteen lines, the first, fifth and fourteenth with names too long for one line of
+            // the row names column.
+            var LABEL_ROWS = ["PMG line with a long spaced number", "PMG-A", "PMG-B", "PMG-C",
+                "PMG-UXL-LONG-NUMBER-WITHOUT-SPACES-0123456789", "PMG-D", "PMG-E", "PMG-F", "PMG-G", "PMG-H", "PMG-I",
+                "PMG-J", "PMG-K", "PMG line with a long spaced number that the row names column cannot show in full",
+                "PMG-LAST"];
+
+            // Items of the labels board that its collisions cover: on PMG-C a 1.5-hour order under a maintenance event
+            // that continues 1.5 hours to its right, on PMG-D two 4-hour orders and on PMG-E two 2.5-hour orders.
+            var divisionOverlapOrder = orderBarH1("PMG-C", 206, "PMG-labels-DIVOVERLAP", "08:00:00", "09:30:00");
+            var divisionEvent = item("PMG-C", null, "PMG-EV-DIVISION", "2026-06-01 08:00:00", "2026-06-01 11:00:00",
+                HOURS_INTERVALS.H1, "2026-06-01", [MAINTENANCE_STRIP]);
+            var wideOrderA = orderBarH1("PMG-D", 207, "PMG-labels-WIDE-A", "13:00:00", "17:00:00");
+            var wideOrderB = orderBarH1("PMG-D", 208, "PMG-labels-WIDE-B", "13:00:00", "17:00:00");
+            var midOrderA = orderBarH1("PMG-E", 209, "PMG-labels-MID-A", "13:00:00", "15:30:00");
+            var midOrderB = orderBarH1("PMG-E", 210, "PMG-labels-MID-B", "13:00:00", "15:30:00");
 
             // Board definitions, each {options, board}: options replace component option keys and board is the
             // content answered to refresh.
@@ -516,6 +551,52 @@
                     options: {allowItemMove: false},
                     board: board("H1", "2026-06-01", "2026-06-01", hourScale("H1", "2026-06-01", "2026-06-01"), LINES, [
                         orderBarH1("L1", 7, "ORD-7", "09:00:00", "10:00:00"),
+                        maintenanceBarH1()
+                    ])
+                },
+                approved: {
+                    options: {},
+                    board: board("H1", "2026-06-01", "2026-06-01", hourScale("H1", "2026-06-01", "2026-06-01"), LINES, [
+                        approvedOrderBarH1()
+                    ])
+                },
+                // Two H1 days, so the pane scrolls both ways. PMG-A: order bars of 0.5, 1, 2, 3 and 4 hours, the last
+                // with a 60-character number; PMG-B: id-less maintenance bars of 1.5 and 2 hours; PMG-C: a 1.5-hour
+                // collision; PMG-D: a 4-hour collision; PMG-E: a 2.5-hour collision; PMG-F: a 2-hour order bar with a
+                // short number.
+                labels: {
+                    options: {},
+                    board: board("H1", "2026-06-01", "2026-06-02", hourScale("H1", "2026-06-01", "2026-06-02"),
+                        LABEL_ROWS, [
+                        orderBarH1("PMG-A", 201, "PMG-labels-A0", "01:00:00", "01:30:00"),
+                        orderBarH1("PMG-A", 202, "PMG-labels-A1", "02:00:00", "03:00:00"),
+                        orderBarH1("PMG-A", 203, "PMG-labels-A2", "04:00:00", "06:00:00"),
+                        orderBarH1("PMG-A", 204, "PMG-labels-A3", "07:00:00", "10:00:00"),
+                        orderBarH1("PMG-A", 205, "PMG-ORDER-WITH-A-SIXTY-CHARACTER-NUMBER-0123456789-ABCDEFGHI",
+                            "11:00:00", "15:00:00"),
+                        item("PMG-B", null, "PMG-QA-SHUT", "2026-06-01 01:00:00", "2026-06-01 02:30:00", HOURS_INTERVALS.H1,
+                            "2026-06-01", [MAINTENANCE_STRIP]),
+                        item("PMG-B", null, "PMG-EV-SHUTDOWN", "2026-06-01 04:00:00", "2026-06-01 06:00:00",
+                            HOURS_INTERVALS.H1, "2026-06-01", [MAINTENANCE_STRIP]),
+                        divisionOverlapOrder,
+                        divisionEvent,
+                        wideOrderA,
+                        wideOrderB,
+                        midOrderA,
+                        midOrderB,
+                        orderBarH1("PMG-F", 211, "ORD-9", "02:00:00", "04:00:00")
+                    ], [
+                        collision("PMG-C", divisionOverlapOrder, [divisionOverlapOrder, divisionEvent]),
+                        collision("PMG-D", wideOrderA, [wideOrderA, wideOrderB]),
+                        collision("PMG-E", midOrderA, [midOrderA, midOrderB])
+                    ])
+                },
+                // Bar 7 on L1, bar 9 on L2 half an hour after it, and PE-1 on L2 half an hour after bar 9.
+                neighbours: {
+                    options: {},
+                    board: board("H1", "2026-06-01", "2026-06-01", hourScale("H1", "2026-06-01", "2026-06-01"), LINES, [
+                        orderBarH1("L1", 7, "ORD-7", "09:00:00", "10:00:00"),
+                        orderBarH1("L2", 9, "ORD-9", "10:30:00", "11:30:00"),
                         maintenanceBarH1()
                     ])
                 }

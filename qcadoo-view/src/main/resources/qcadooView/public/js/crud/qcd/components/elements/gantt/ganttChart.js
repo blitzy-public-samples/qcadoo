@@ -25,25 +25,13 @@ var QCD = QCD || {};
 QCD.components = QCD.components || {};
 QCD.components.elements = QCD.components.elements || {};
 
-/**
- * Stateless calculations of Gantt item moves: wall-clock dates, 30-minute grid snapping, pixel and date conversion, drop
- * target resolution, drag eligibility, HTML escaping and moveItem event arguments. Dates are "yyyy-MM-dd HH:mm:ss" wall-clock
- * strings of the years 0000 to 9999 in the proleptic Gregorian calendar; wall-clock minutes count minutes from
- * 1970-01-01 00:00:00 without any time zone offset.
- */
+/** Stateless Gantt move calculations on "yyyy-MM-dd HH:mm:ss" wall-clock dates and minutes since 1970-01-01 00:00:00. */
 QCD.components.elements.GanttChartMoveTransform = {
 
-    /** Pointer travel in pixels, on either axis, at which a press on a draggable item becomes a drag. */
+    /** Pointer travel in pixels at which a press becomes a drag. */
     DRAG_THRESHOLD_PX: 4,
 
-    /**
-     * Parses a wall-clock date. Every year from 0000 to 9999 is read as written.
-     *
-     * @param text date in the "yyyy-MM-dd HH:mm:ss" format
-     * @returns wall-clock minutes of the date, or null when the text is not a string in that format or when formatWallClock
-     *          does not turn those minutes back into the same text, as for a month, day, hour, minute or second outside its
-     *          range
-     */
+    /** Parses a "yyyy-MM-dd HH:mm:ss" wall-clock date into wall-clock minutes, or null when invalid. */
     parseWallClock: function (text) {
         if (typeof text !== "string") {
             return null;
@@ -64,13 +52,7 @@ QCD.components.elements.GanttChartMoveTransform = {
         return minutes;
     },
 
-    /**
-     * Formats wall-clock minutes as a wall-clock date.
-     *
-     * @param minutes wall-clock minutes
-     * @returns date in the "yyyy-MM-dd HH:mm:ss" format, or null when the value is not a finite number or the date lies
-     *          outside the years 0000 to 9999
-     */
+    /** Formats wall-clock minutes as "yyyy-MM-dd HH:mm:ss", or null for a non-finite value or a year outside 0000-9999. */
     formatWallClock: function (minutes) {
         if (typeof minutes !== "number" || !isFinite(minutes)) {
             return null;
@@ -91,28 +73,11 @@ QCD.components.elements.GanttChartMoveTransform = {
             + pad(date.getUTCHours(), 2) + ":" + pad(date.getUTCMinutes(), 2) + ":" + pad(date.getUTCSeconds(), 2);
     },
 
-    /**
-     * Rounds minutes to the nearest multiple of the grid.
-     *
-     * @param minutes wall-clock minutes
-     * @param grid grid step in minutes
-     * @returns the nearest multiple of the grid step
-     */
     snapMinutes: function (minutes, grid) {
         return Math.round(minutes / grid) * grid;
     },
 
-    /**
-     * Converts a horizontal pixel delta of a dragged item into its snapped start date.
-     *
-     * @param originalDateFrom start date of the item before the drag
-     * @param deltaPx horizontal pointer travel in pixels, positive to the right
-     * @param hoursInterval hours spanned by one chart cell at the current zoom level
-     * @param cellWidth width of one chart cell in pixels
-     * @param grid grid step in minutes
-     * @returns snapped start date, or null when the original start date does not parse or the snapped start date lies
-     *          outside the years 0000 to 9999
-     */
+    /** Converts the horizontal pixel travel of a dragged item into its snapped start date, or null when invalid. */
     toDropDate: function (originalDateFrom, deltaPx, hoursInterval, cellWidth, grid) {
         var start = QCD.components.elements.GanttChartMoveTransform.parseWallClock(originalDateFrom);
         if (start === null) {
@@ -122,15 +87,7 @@ QCD.components.elements.GanttChartMoveTransform = {
             QCD.components.elements.GanttChartMoveTransform.snapMinutes(start + deltaPx / cellWidth * hoursInterval * 60, grid));
     },
 
-    /**
-     * Converts the distance between two dates into a horizontal pixel delta.
-     *
-     * @param originalDateFrom start date of the item before the drag
-     * @param targetDate target start date
-     * @param hoursInterval hours spanned by one chart cell at the current zoom level
-     * @param cellWidth width of one chart cell in pixels
-     * @returns pixel delta, positive when the target date is later, or 0 when either date does not parse
-     */
+    /** Converts the distance between two dates into a horizontal pixel delta, or 0 when either date does not parse. */
     toPixelDelta: function (originalDateFrom, targetDate, hoursInterval, cellWidth) {
         var original = QCD.components.elements.GanttChartMoveTransform.parseWallClock(originalDateFrom);
         var target = QCD.components.elements.GanttChartMoveTransform.parseWallClock(targetDate);
@@ -140,14 +97,7 @@ QCD.components.elements.GanttChartMoveTransform = {
         return (target - original) / (hoursInterval * 60) * cellWidth;
     },
 
-    /**
-     * Resolves the row under a vertical position in the rows content.
-     *
-     * @param contentY vertical position in pixels from the top of the rows content
-     * @param rowHeight height of one row in pixels
-     * @param rowNames row names in display order
-     * @returns name of the row at the position, or null when there are no row names or the position lies outside the rows
-     */
+    /** Returns the name of the row at a vertical position in the rows content, or null outside the rows. */
     resolveDropRow: function (contentY, rowHeight, rowNames) {
         if (!rowNames || typeof contentY !== "number" || !(contentY >= 0)) {
             return null;
@@ -159,14 +109,7 @@ QCD.components.elements.GanttChartMoveTransform = {
         return rowNames[index];
     },
 
-    /**
-     * Checks whether a point lies inside both rectangles; left and top edges are inside, right and bottom edges are outside.
-     *
-     * @param point point with x and y
-     * @param visibleRect visible rectangle with left, top, right and bottom
-     * @param contentRect content rectangle with left, top, right and bottom
-     * @returns true when all three arguments are given and the point lies inside both rectangles
-     */
+    /** Returns whether a point lies inside both rectangles, left and top edges included, right and bottom edges excluded. */
     isValidDropPoint: function (point, visibleRect, contentRect) {
         if (!point || !visibleRect || !contentRect) {
             return false;
@@ -177,30 +120,11 @@ QCD.components.elements.GanttChartMoveTransform = {
         return isInside(visibleRect) && isInside(contentRect);
     },
 
-    /**
-     * Computes the width of one grid step.
-     *
-     * @param hoursInterval hours spanned by one chart cell at the current zoom level
-     * @param cellWidth width of one chart cell in pixels
-     * @param grid grid step in minutes
-     * @returns width of one grid step in pixels
-     */
     gridStepPx: function (hoursInterval, cellWidth, grid) {
         return cellWidth * grid / (hoursInterval * 60);
     },
 
-    /**
-     * Checks whether an item can be dragged.
-     *
-     * @param item Gantt item
-     * @param isCollision whether the item is a collision item
-     * @param allowItemMove whether the chart allows item moves
-     * @param hoursInterval hours spanned by one chart cell at the current zoom level
-     * @param cellWidth width of one chart cell in pixels
-     * @param grid grid step in minutes
-     * @returns true only when moves are allowed, the item is not a collision item, the item id is a non-zero integer number
-     *          from -9007199254740991 to 9007199254740991, and one grid step is at least DRAG_THRESHOLD_PX wide
-     */
+    /** Returns whether an item can be dragged: moves allowed, not a collision, safe non-zero integer id, grid step >= DRAG_THRESHOLD_PX. */
     isDraggable: function (item, isCollision, allowItemMove, hoursInterval, cellWidth, grid) {
         var maxSafeInteger = 9007199254740991;
         if (allowItemMove !== true || isCollision || !item || typeof item.id !== "number" || item.id === 0
@@ -211,13 +135,7 @@ QCD.components.elements.GanttChartMoveTransform = {
             >= QCD.components.elements.GanttChartMoveTransform.DRAG_THRESHOLD_PX;
     },
 
-    /**
-     * Encodes a value for use as HTML text.
-     *
-     * @param text value to encode
-     * @returns the value as a string with &, <, >, " and ' replaced by character references, or an empty string for null
-     *          and undefined
-     */
+    /** Encodes a value as HTML text; "" for null and undefined. */
     escapeHtml: function (text) {
         if (text === null || text === undefined) {
             return "";
@@ -226,15 +144,6 @@ QCD.components.elements.GanttChartMoveTransform = {
             .replace(/'/g, "&#39;");
     },
 
-    /**
-     * Builds the arguments of the moveItem event.
-     *
-     * @param item dragged Gantt item as rendered
-     * @param targetRow name of the target row
-     * @param dateFrom target start date
-     * @returns one-element array holding the JSON payload with itemId, row, dateFrom, originalRow, originalName,
-     *          originalDateFrom and originalDateTo
-     */
     buildMoveArgs: function (item, targetRow, dateFrom) {
         return [JSON.stringify({
             itemId: item.id,
@@ -247,12 +156,7 @@ QCD.components.elements.GanttChartMoveTransform = {
         })];
     },
 
-    /**
-     * Interprets the moveResult of a moveItem response.
-     *
-     * @param moveResult move result with accepted and message, or null when the response carries none
-     * @returns object with snapBack, true unless the move is accepted, and message, the delivered message or null
-     */
+    /** Returns snapBack, true unless the moveResult is accepted, and its message or null. */
     resolveMoveOutcome: function (moveResult) {
         return {
             snapBack: !(moveResult && moveResult.accepted === true),
@@ -279,14 +183,20 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         ROW_NAMES_WIDTH: 200,
         RIGHT_SCROLL_WIDTH: 17,
         BOTTOM_SCROLL_HEIGHT: 16,
-        // Milliseconds after the end of a drag during which a click on the dragged item is ignored.
+        // Milliseconds after a drag during which a click on the dragged item is ignored.
         CLICK_SUPPRESSION_MS: 1000,
-        // Inline z-index of the focused draggable item and of a draggable item with the ganttItemDragging class, and the
-        // outline and outline offset of the focus ring of a draggable item.
+        // Inline z-index of focused and dragged items; focus ring outline, offset and opacity.
         FOCUSED_ITEM_Z_INDEX: "220",
         DRAGGING_ITEM_Z_INDEX: "230",
         FOCUS_RING_OUTLINE: "2px solid #000000",
-        FOCUS_RING_OFFSET: "-2px"
+        FOCUS_RING_OFFSET: "-2px",
+        FOCUSED_ITEM_OPACITY: "1",
+        // Label fitting in px: minimum labelled width, label padding and collision icon padding.
+        ITEM_LABEL_MIN_WIDTH_PX: 20,
+        LABEL_PADDING_PX: 3,
+        COLLISION_ICON_PADDING_PX: 32,
+        // Distance in px from a rejection's first mousemove beyond which it is dismissed.
+        REJECTION_DISMISS_DISTANCE_PX: 30
     };
 
     var keyCodes = {
@@ -323,24 +233,30 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
 
     var moveTransform = QCD.components.elements.GanttChartMoveTransform;
 
-    // Press, drag or keyboard move of a draggable item in progress, or null. Fields: phase ("pending" or "active" for a
-    // pointer press or drag, "keyboard" for a keyboard move), pointerId (null for a keyboard move), element, item,
-    // originRow, originIndex, preDragLeft, preDragTop, startX, startY, dateFrom, dateTo, hoursInterval, targetDate and
-    // targetRow. A keyboard move also holds steps, the number of grid steps from the original start, positive to the
-    // right, and rowIndex, the index of its target row.
+    // Move in progress, or null; phase "pending", "active" or "keyboard"; drags keep lastPoint.
     var dragState = null,
-        // DOM element of the draggable item that has the focus, or null.
-        focusedItemNode = null;
+        // DOM element of the focused item, or null.
+        focusedItemNode = null,
+        // Item element whose tooltip showFocusTooltip shows, or null.
+        focusTooltipItemNode = null;
 
-    // Dropped item awaiting the moveItem response, or null. Fields: element, preDragLeft, preDragTop and itemId.
+    // Id of the keyboard move help element, or null.
+    var moveHelpId = null;
+
+    // Textarea decodeHtmlText reuses, or null until first used.
+    var htmlTextDecoder = null;
+
+    // Dropped item awaiting the moveItem response, or null.
     var pendingMove = null;
 
-    // Id of the item that receives the focus once the board is rebuilt from an accepted moveItem response, or null.
+    // Id of the item focused after the board is rebuilt from an accepted move, or null.
     var focusAfterMoveItemId = null;
 
-    // Click to ignore after a drag, or null. Fields: element, the DOM element of the dragged item, and expiresAt, the
-    // time in milliseconds until which a click on that element is ignored.
+    // Dragged item element whose click is ignored until expiresAt, or null.
     var clickSuppression = null;
+
+    // Shown rejection, or null: item node, pane scroll and first mousemove point.
+    var rejectionState = null;
 
     function constructor() {
         createGantt();
@@ -364,25 +280,25 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         if (value.moveResult) {
             var outcome = moveTransform.resolveMoveOutcome(value.moveResult);
             if (outcome.snapBack) {
-                // Rejected move: restores the dropped item, shows the reason next to it and leaves the chart unchanged. A missing
-                // header translation or message renders as an empty string.
+                // Rejected move: restores the dropped item and shows the reason next to it.
                 var movedItemElement = pendingMove ? pendingMove.element : $("#" + _this.elementSearchName + "_item_" + value.moveResult.itemId);
                 if (pendingMove) {
                     restoreItemPosition(pendingMove);
                 }
+                rejectionState = createRejectionState(movedItemElement);
                 ganttTooltip.hide();
                 var rejectionBody = "<div class='ganttItemDescriptionName'>" + (_this.options.translations["move.rejectedHeader"] || "") + "</div>"
                     + "<div class='ganttItemDescriptionInfo'>" + (outcome.message || "") + "</div>";
                 var anchorRect = (movedItemElement.length > 0 ? movedItemElement[0] : element[0]).getBoundingClientRect();
                 ganttTooltip.setBody(rejectionBody, "alert");
-                ganttTooltip.show((anchorRect.left + anchorRect.right) / 2, anchorRect.bottom, rejectionBody);
+                ganttTooltip.showFor(rejectionState, (anchorRect.left + anchorRect.right) / 2, anchorRect.bottom,
+                    rejectionBody, movedItemElement.length > 0 ? anchorRect : undefined);
                 pendingMove = null;
                 QCD.components.elements.utils.LoadingIndicator.unblockElement(element);
                 return;
             }
             if (!value.scale) {
-                // Accepted moveResult without its chart: restores the dropped item, hides the tooltip and unblocks the
-                // chart, leaving the chart and its header unchanged.
+                // Accepted move without its chart: restores the dropped item, hides the tooltip and unblocks the chart.
                 if (pendingMove) {
                     restoreItemPosition(pendingMove);
                     pendingMove = null;
@@ -391,7 +307,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
                 QCD.components.elements.utils.LoadingIndicator.unblockElement(element);
                 return;
             }
-            // Accepted move: restores the dropped item before the chart is rebuilt from the response.
+            // Accepted move: restores the dropped item before the chart is rebuilt.
             if (pendingMove) {
                 restoreItemPosition(pendingMove);
                 pendingMove = null;
@@ -406,21 +322,19 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         header.setGlobalErrorMessage(value.globalErrorMessage);
         if (value.selectedEntityId) {
             if (selectedItem) {
-                selectedItem.removeClass("ganttItemSelected");
+                setItemSelected(selectedItem, false);
             }
             var newSelectedItem = $("#" + _this.elementSearchName + "_item_" + value.selectedEntityId);
             selectedItem = newSelectedItem;
-            newSelectedItem.addClass("ganttItemSelected");
+            setItemSelected(newSelectedItem, true);
         }
         collisionInfoBoxOverlay.hide();
-        // While a dropped item awaits the moveItem response, the chart stays blocked.
         if (!pendingMove) {
             QCD.components.elements.utils.LoadingIndicator.unblockElement(element);
         }
     };
 
-    // A press, drag or keyboard move in progress ends without an event before the chart requests new content or shows its
-    // loading indicator.
+    // A reload or the loading indicator ends any press, drag or keyboard move without an event.
     this.performInitialize = function () {
         abandonDrag();
         refreshContent();
@@ -432,8 +346,6 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             QCD.components.elements.utils.LoadingIndicator.blockElement(element);
             header.disableButtons();
         } else {
-            // While a dropped item awaits the moveItem response, the chart stays blocked; the header buttons are
-            // enabled.
             if (!pendingMove) {
                 QCD.components.elements.utils.LoadingIndicator.unblockElement(element);
             }
@@ -478,11 +390,10 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         itemsBorderWidth = cellSettings.itemsBorderWidth || 1;
         itemsBorderColor = cellSettings.itemsBorderColor || "silver";
 
-        // A press, drag or keyboard move in progress ends before its item is removed. On charts that allow item moves, the
-        // tooltip is hidden as well.
         abandonDrag();
         if (_this.options.allowItemMove === true) {
             ganttTooltip.hide();
+            dismissRejection();
         }
 
         htmlElements.rowNamesConteiner.children().remove();
@@ -507,11 +418,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         rebindPendingMove();
     }
 
-    /**
-     * Points the pending move, if any, at the rendered element of its item and stores that element's current left and
-     * top as preDragLeft and preDragTop, the position the move restores. When the chart shows no such item, the element
-     * is an empty set and preDragLeft and preDragTop become undefined.
-     */
+    /** Points the pending move at its re-rendered item element and that element's position. */
     function rebindPendingMove() {
         if (!pendingMove) {
             return;
@@ -522,16 +429,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         pendingMove.preDragTop = mountedItemElement.css("top");
     }
 
-    /**
-     * Announces an accepted move after the board has been rebuilt from its moveItem response. When the value carries a
-     * moveResult with accepted true and applySettings has rendered the value as the board, the move.acceptedAnnouncement
-     * translation, or an empty text when it is missing, replaces the content of the status live region, and the focus
-     * moves to the rebuilt element of the item that a keyboard move sent, when that element exists and has a tabindex.
-     * Every value passed to this function with a moveResult clears the item to focus; a value passed without one changes
-     * nothing.
-     *
-     * @param value component value passed to setComponentValue
-     */
+    /** Announces an accepted move, empties the alert and refocuses a keyboard-moved item. */
     function announceAcceptedMove(value) {
         if (!value.moveResult) {
             return;
@@ -542,11 +440,84 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             return;
         }
         ganttTooltip.announce(_this.options.translations["move.acceptedAnnouncement"] || "", "status");
+        ganttTooltip.announce("", "alert");
         if (focusItemId !== null) {
             var movedItemNode = $("#" + _this.elementSearchName + "_item_" + focusItemId)[0];
             if (movedItemNode && movedItemNode.hasAttribute("tabindex")) {
                 movedItemNode.focus();
             }
+        }
+    }
+
+    /** Returns a rejection state for an item element at the rows pane scroll. */
+    function createRejectionState(itemElement) {
+        return {
+            itemNode: itemElement.length > 0 ? itemElement[0] : null,
+            scrollLeft: htmlElements.rowsContainerWrapper.scrollLeft(),
+            scrollTop: htmlElements.rowsContainerWrapper.scrollTop(),
+            originX: null,
+            originY: null
+        };
+    }
+
+    /** Clears the rejection, hides its tooltip and empties the alert region. */
+    function dismissRejection() {
+        var state = rejectionState;
+        if (!state) {
+            return;
+        }
+        rejectionState = null;
+        if (ganttTooltip.isShowing(state)) {
+            ganttTooltip.hide();
+        }
+        ganttTooltip.announce("", "alert");
+    }
+
+    /** Binds rejection dismissal on press, Escape, focus elsewhere, resize, scroll and mouse travel. */
+    function bindRejectionDismissal() {
+        document.addEventListener("pointerdown", function () {
+            dismissRejection();
+        }, true);
+        document.addEventListener("keydown", function (eventObj) {
+            if ((eventObj.which || eventObj.keyCode) === keyCodes.ESCAPE) {
+                dismissRejection();
+            }
+        }, true);
+        document.addEventListener("focusin", function (eventObj) {
+            if (rejectionState && eventObj.target !== rejectionState.itemNode) {
+                dismissRejection();
+            }
+        }, true);
+        window.addEventListener("resize", function () {
+            dismissRejection();
+        }, false);
+        htmlElements.rowsContainerWrapper[0].addEventListener("scroll", function () {
+            var wrapper = htmlElements.rowsContainerWrapper;
+            if (rejectionState && (wrapper.scrollLeft() !== rejectionState.scrollLeft
+                    || wrapper.scrollTop() !== rejectionState.scrollTop)) {
+                dismissRejection();
+            }
+        }, false);
+        document.addEventListener("mousemove", onRejectionMouseMove, false);
+    }
+
+    /** Dismisses the rejection past REJECTION_DISMISS_DISTANCE_PX from its first mousemove. */
+    function onRejectionMouseMove(eventObj) {
+        var state = rejectionState,
+            dx,
+            dy;
+        if (!state || !isFiniteNumber(eventObj.clientX) || !isFiniteNumber(eventObj.clientY)) {
+            return;
+        }
+        if (state.originX === null) {
+            state.originX = eventObj.clientX;
+            state.originY = eventObj.clientY;
+            return;
+        }
+        dx = eventObj.clientX - state.originX;
+        dy = eventObj.clientY - state.originY;
+        if (Math.sqrt(dx * dx + dy * dy) > constants.REJECTION_DISMISS_DISTANCE_PX) {
+            dismissRejection();
         }
     }
 
@@ -562,12 +533,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }
     }
 
-    /**
-     * Returns the hours spanned by one chart cell at the current zoom level of the header, on charts that allow item moves.
-     *
-     * @returns the zoomHoursIntervals option entry of the current header scale, or undefined, without reading the header,
-     *          when the chart does not allow item moves or has no zoomHoursIntervals option
-     */
+    /** Returns the hours per cell at the current scale on charts that allow item moves, or undefined. */
     function getMoveHoursInterval() {
         if (_this.options.allowItemMove !== true || !_this.options.zoomHoursIntervals) {
             return undefined;
@@ -588,15 +554,14 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
                 var itemElement = $(this);
                 var itemId = this.entityId;
                 if (selectedItem) {
-                    selectedItem.removeClass("ganttItemSelected");
+                    setItemSelected(selectedItem, false);
                     $("#" + _this.elementSearchName + "_collisionItem_" + selectedItem[0].entityId).removeClass("ganttItemSelected");
                 }
                 var ganttElement = $("#" + _this.elementSearchName + "_item_" + itemId);
                 selectedItem = ganttElement;
                 itemElement.addClass("ganttItemSelected");
-                ganttElement.addClass("ganttItemSelected");
+                setItemSelected(ganttElement, true);
                 onSelectChange();
-                // On charts that allow item moves, choosing an entry also closes the collision box.
                 if (_this.options.allowItemMove === true) {
                     collisionInfoBoxOverlay.hide();
                 }
@@ -661,6 +626,11 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
 
             var scrollTop = htmlElements.rowsContainerWrapper.scrollTop();
             htmlElements.rowNamesConteiner.scrollTop(scrollTop);
+
+            discardDetachedDrag();
+            if (dragState && dragState.phase === "active") {
+                updateDragTarget(dragState.lastPoint);
+            }
         });
 
         var collisionInfoBox = $("<div>").addClass("collisionInfoBox").click(function () {
@@ -686,30 +656,62 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         collisionInfoBox.append(collisionInfoBoxHeader);
         collisionInfoBox.append(collisionInfoBoxContent);
 
-        // On charts that allow item moves, an element of the chart element with the ganttChartMoveHelp class, hidden
-        // visually by the inline GanttChartVisuallyHiddenStyle map, holds the keyboard move instructions that describe
-        // every draggable item; without an instructions text there is no such element.
         if (_this.options.allowItemMove === true) {
             var keyboardHelpText = getKeyboardHelpText();
             if (keyboardHelpText.length > 0) {
+                moveHelpId = _this.elementPath + "_moveHelp";
                 htmlElements.moveHelp = $("<div>").addClass("ganttChartMoveHelp");
                 htmlElements.moveHelp.css(QCD.components.elements.GanttChartVisuallyHiddenStyle);
-                htmlElements.moveHelp.attr("id", _this.elementPath + "_moveHelp");
+                htmlElements.moveHelp.attr("id", moveHelpId);
                 htmlElements.moveHelp.text(keyboardHelpText);
                 element.append(htmlElements.moveHelp);
             }
+            bindItemHandlers();
+            bindRejectionDismissal();
         }
     }
 
-    /**
-     * Returns the keyboard move instructions: the move.keyboardHelp translation with every "{0}" replaced by the
-     * moveGridMinutes option.
-     *
-     * Example: "Move it by {0} minutes" with moveGridMinutes 30 gives "Move it by 30 minutes".
-     *
-     * @returns the instructions, or an empty string when the translation is missing or empty; a missing moveGridMinutes
-     *          option replaces "{0}" with an empty string
-     */
+    /** Delegates item pointer, key, hover and focus handlers from the rows container. */
+    function bindItemHandlers() {
+        var rowsContainerNode = htmlElements.rowsContainer[0];
+        htmlElements.rowsContainer.on({
+            "pointerdown": function (eventObj) {
+                startPress(eventObj, this.ganttItem, $(this));
+            },
+            "pointermove": onDragMove,
+            "pointerup": endDrag,
+            "pointercancel": cancelDrag,
+            "lostpointercapture": onLostPointerCapture
+        }, ".ganttItemDraggable");
+        htmlElements.rowsContainer.on("keydown", ".ganttItem[tabindex]", function (eventObj) {
+            var itemElement = $(this);
+            onItemKeyDown(eventObj, this.ganttItem, itemElement);
+            updateItemLayer(itemElement);
+            updateItemFocusRing(itemElement);
+        });
+        htmlElements.rowsContainer.on("pointerover", ".ganttItem", function () {
+            if (focusTooltipItemNode !== null && focusTooltipItemNode !== this) {
+                hideFocusTooltip();
+            }
+        });
+        rowsContainerNode.addEventListener("focusin", function (event) {
+            if (isFocusableItemNode(event.target)) {
+                onItemFocus($(event.target));
+            }
+        }, false);
+        rowsContainerNode.addEventListener("focusout", function (event) {
+            if (isFocusableItemNode(event.target)) {
+                onItemBlur($(event.target));
+            }
+        }, false);
+    }
+
+    /** Returns whether a node is a ganttItem element with a tabindex. */
+    function isFocusableItemNode(node) {
+        return !!node && node.nodeType === 1 && node.hasAttribute("tabindex") && $(node).hasClass("ganttItem");
+    }
+
+    /** Returns the move.keyboardHelp translation with "{0}" replaced by moveGridMinutes, or "". */
     function getKeyboardHelpText() {
         var template = _this.options.translations["move.keyboardHelp"],
             gridMinutes = _this.options.moveGridMinutes;
@@ -721,9 +723,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
 
     function createGanttTooltip() {
         ganttTooltip = new QCD.components.elements.GanttChartTooltip(element);
-        // On charts that allow item moves, the tooltip also gets the live regions that announce drag targets and rejections.
         if (_this.options.allowItemMove === true) {
             ganttTooltip.enableLiveFeedback();
+            ganttTooltip.enableMoveLayout();
         }
     }
 
@@ -739,7 +741,11 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     function setHorizontalScrollVisible(visible) {
         isHScrollVisible = visible;
         var rowNamesHeight = htmlElements.rowNamesWrapper.height() - htmlElements.topRow.height() - 1;
-        if (visible) {
+        // Move-enabled charts subtract the rows pane's scroll bar height.
+        if (_this.options.allowItemMove === true) {
+            var rowsPane = htmlElements.rowsContainerWrapper[0];
+            rowNamesHeight -= rowsPane.offsetHeight - rowsPane.clientHeight;
+        } else if (visible) {
             rowNamesHeight -= constants.BOTTOM_SCROLL_HEIGHT;
         }
         htmlElements.rowNamesConteiner.height(rowNamesHeight);
@@ -809,12 +815,34 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         return totalCellsNumber;
     }
 
+    /** Fits an item label on one ellipsed line, writing it when the item is at least minWidth wide. */
+    function fitItemLabel(itemElementContent, labelHtml, width, minWidth, padding) {
+        itemElementContent.css({
+            "left": "0",
+            "right": "0",
+            "white-space": "nowrap",
+            "overflow": "hidden",
+            "text-overflow": "ellipsis",
+            "text-align": "left"
+        });
+        itemElementContent.css(padding);
+        if (width >= minWidth && labelHtml !== null && labelHtml !== undefined && labelHtml !== "") {
+            itemElementContent.html(labelHtml);
+        }
+    }
+
     function addRow(cellSettings, rowName) {
         var rowNameElement = $("<div>").height(constants.CELL_HEIGHT - 1).addClass("ganttRowNameElement");
         rowNameElement.css("line-height", (constants.CELL_HEIGHT - 1) + "px");
-        // On charts that allow item moves, the row name is rendered as text; otherwise as HTML.
         if (_this.options.allowItemMove === true) {
             rowNameElement.text(rowName);
+            rowNameElement.attr("title", rowName);
+            rowNameElement.css({
+                "white-space": "nowrap",
+                "overflow": "hidden",
+                "text-overflow": "ellipsis",
+                "padding": "0 " + constants.LABEL_PADDING_PX + "px"
+            });
         } else {
             rowNameElement.html(rowName);
         }
@@ -823,12 +851,16 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         var rowElement = $("<div>").height(constants.CELL_HEIGHT - 1).addClass("ganttRowElement");
         htmlElements.rowsContainer.append(rowElement);
 
+        var alignCellsTop = _this.options.allowItemMove === true;
         for (var i = 0; i < cellSettings.scale.categories.length; i++) {
             var categoryCellsNumber = getCategoryCellsNumber(cellSettings, i);
             var cellElement;
             for (var bottomI = 0; bottomI < categoryCellsNumber; bottomI++) {
                 cellElement = $("<div>").height(constants.CELL_HEIGHT - 1).width(constants.CELL_WIDTH - 1).addClass("ganttCellElement");
                 cellElement.attr("id", "ganttCellElement_" + i + "_" + bottomI);
+                if (alignCellsTop) {
+                    cellElement.css("vertical-align", "top");
+                }
                 rowElement.append(cellElement);
             }
             cellElement.addClass("ganttTopRowElementEnd");
@@ -837,16 +869,29 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         return rowElement;
     }
 
-    /**
-     * Renders a Gantt item in its row and binds its selection, hover tooltip and, when it is draggable, pointer drag
-     * handlers. A draggable item is also a focusable button named by its label, row, start and end, described by the
-     * keyboard move instructions when the chart has them, and moved with the keyboard handlers of onItemKeyDown.
-     *
-     * @param item Gantt item
-     * @param isCollision whether the item is a collision item
-     * @param moveHoursInterval hours spanned by one chart cell at the current zoom level on charts that allow item moves,
-     *                          as returned by getMoveHoursInterval; undefined leaves the item without a drag affordance
-     */
+    /** Builds the hover tooltip HTML: header, content lines, start and end. */
+    function createTooltipContent(item) {
+        var tooltip = item.info.tooltip,
+            description = "",
+            content = tooltip.content || [],
+            contentLen = content.length,
+            i;
+        if (typeof tooltip.header === 'string') {
+            description += "<div class='ganttItemDescriptionName'>" + tooltip.header + "</div>"
+        }
+        for (i = 0; i < contentLen; i++) {
+            description += "<div class='ganttItemDescriptionInfo'>" + content[i] + "</div>";
+        }
+        description += "<div class='ganttItemDescriptionInfo'>";
+        description += "<div class='ganttItemDescriptionLabel'>" + _this.options.translations["description.dateFrom"] + "</div>";
+        description += "<div class='ganttItemDescriptionValue'>" + item.info.dateFrom + "</div></div>";
+        description += "<div class='ganttItemDescriptionInfo'>";
+        description += "<div class='ganttItemDescriptionLabel'>" + _this.options.translations["description.dateTo"] + "</div>";
+        description += "<div class='ganttItemDescriptionValue'>" + item.info.dateTo + "</div></div>";
+        return description;
+    }
+
+    /** Renders an item with its handlers and, on move-enabled charts, keyboard access. */
     function addItem(item, isCollision, moveHoursInterval) {
         var row = rowsByName[item.row];
         var itemElement = $("<div>").addClass("ganttItem");
@@ -876,7 +921,16 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
 
         if (isCollision) {
             itemElement.addClass("ganttCollisionItem");
-            if (width > 30) {
+            if (_this.options.allowItemMove === true) {
+                if (width > 15) {
+                    itemElement.addClass("withIcon");
+                }
+                itemElement.css("overflow", "hidden");
+                fitItemLabel(itemElementContent, _this.options.translations["colisionElementName"], width,
+                    constants.COLLISION_ICON_PADDING_PX + constants.ITEM_LABEL_MIN_WIDTH_PX, {
+                        "padding-right": constants.LABEL_PADDING_PX + "px"
+                    });
+            } else if (width > 30) {
                 itemElement.addClass("withIcon");
                 itemElementContent.html(_this.options.translations["colisionElementName"]);
                 itemElementContent.shorten({width: width, tail: "...", tooltip: false});
@@ -885,6 +939,10 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             }
             itemElement[0].isCollision = true; // add isCollision to DOM element
             itemElement[0].ganttItem = item; // add item element to DOM
+        } else if (_this.options.allowItemMove === true) {
+            fitItemLabel(itemElementContent, item.info.name, width, constants.ITEM_LABEL_MIN_WIDTH_PX, {
+                "padding": "0 " + constants.LABEL_PADDING_PX + "px"
+            });
         } else {
             if (width > 30) {
                 itemElementContent.html(item.info.name);
@@ -893,35 +951,21 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }
         itemElement.append(itemElementContent);
 
-        function createTooltipContent(item) {
-            var tooltip = item.info.tooltip,
-                description = "",
-                content = tooltip.content || [],
-                contentLen = content.length,
-                i;
-            if (typeof tooltip.header === 'string') {
-                description += "<div class='ganttItemDescriptionName'>" + tooltip.header + "</div>"
-            }
-            for (i = 0; i < contentLen; i++) {
-                description += "<div class='ganttItemDescriptionInfo'>" + content[i] + "</div>";
-            }
-            description += "<div class='ganttItemDescriptionInfo'>";
-            description += "<div class='ganttItemDescriptionLabel'>" + _this.options.translations["description.dateFrom"] + "</div>";
-            description += "<div class='ganttItemDescriptionValue'>" + item.info.dateFrom + "</div></div>";
-            description += "<div class='ganttItemDescriptionInfo'>";
-            description += "<div class='ganttItemDescriptionLabel'>" + _this.options.translations["description.dateTo"] + "</div>";
-            description += "<div class='ganttItemDescriptionValue'>" + item.info.dateTo + "</div></div>";
-            return description;
-        }
-
-        // While a drag or a keyboard move is in progress, the hover handlers leave the tooltip unchanged.
+        // Hover shows the item's body, except while moving or over its own rejection.
         if (_this.options.hasPopupInfo) {
             itemElement.bind({
                 "mousemove": function (eventObj) {
                     if (dragState && dragState.phase !== "pending") {
                         return;
                     }
-                    ganttTooltip.show(eventObj.clientX, eventObj.clientY, createTooltipContent(item));
+                    if (_this.options.allowItemMove !== true) {
+                        ganttTooltip.show(eventObj.clientX, eventObj.clientY, createTooltipContent(item));
+                        return;
+                    }
+                    if (rejectionState && rejectionState.itemNode === this && ganttTooltip.isShowing(rejectionState)) {
+                        return;
+                    }
+                    ganttTooltip.showFor(this, eventObj.clientX, eventObj.clientY, createTooltipContent(item));
                 },
                 "mouseleave": function (eventObj) {
                     if (dragState && dragState.phase !== "pending") {
@@ -936,7 +980,8 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             itemElement.attr("id", _this.elementPath + "_item_" + item.id);
             itemElement[0].entityId = item.id; // add entityId to DOM element
             itemElement.css("cursor", "pointer");
-            itemElement.click(function () {
+            // A click inside a collision item listing this item opens its box.
+            itemElement.click(function (eventObj) {
                 if (consumeClickSuppression(this)) {
                     return;
                 }
@@ -944,46 +989,18 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
                     showCollisionBox(this.ganttItem);
                     return;
                 }
+                var collisionNode = findCollisionItemAtClick(this, eventObj);
+                if (collisionNode !== null) {
+                    showCollisionBox(collisionNode.ganttItem);
+                    return;
+                }
                 selectItemElement($(this));
             });
         }
 
-        // Draggable items get the ganttItemDraggable class, the move cursor, the pointer drag handlers, the button role,
-        // tab stop and accessible name and description, the keyboard move handlers, and the focus and blur handlers that
-        // set the inline z-index of the focused item and its inline focus ring; the focus ring is updated again after
-        // every key pressed on the item.
-        if (moveTransform.isDraggable(item, isCollision, _this.options.allowItemMove, moveHoursInterval, constants.CELL_WIDTH, _this.options.moveGridMinutes)) {
-            itemElement.addClass("ganttItemDraggable");
-            itemElement.css("cursor", "move");
-            itemElement.attr({
-                "tabindex": "0",
-                "role": "button",
-                "aria-label": getItemAccessibleName(item)
-            });
-            if (htmlElements.moveHelp) {
-                itemElement.attr("aria-describedby", htmlElements.moveHelp.attr("id"));
-            }
-            itemElement.bind({
-                "pointerdown": function (eventObj) {
-                    startPress(eventObj, item, itemElement);
-                },
-                "pointermove": onDragMove,
-                "pointerup": endDrag,
-                "pointercancel": cancelDrag,
-                "lostpointercapture": onLostPointerCapture,
-                "keydown": function (eventObj) {
-                    onItemKeyDown(eventObj, item, itemElement);
-                    updateItemFocusRing(itemElement);
-                },
-                "blur": function () {
-                    onItemBlur(itemElement);
-                }
-            });
-            // The focus handler is a native listener: it runs once the item holds the focus, also when jQuery triggers
-            // the focus.
-            itemElement[0].addEventListener("focus", function () {
-                onItemFocus(itemElement);
-            }, false);
+        if (_this.options.allowItemMove === true && !isCollision) {
+            setItemAccessibility(itemElement[0], item, moveTransform.isDraggable(item, isCollision,
+                _this.options.allowItemMove, moveHoursInterval, constants.CELL_WIDTH, _this.options.moveGridMinutes));
         }
 
         itemElement.mouseover(function () {
@@ -993,72 +1010,148 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         });
     }
 
-    /**
-     * Selects an item as a click on it does: removes the ganttItemSelected class from the selected item, makes the item
-     * the selected item with that class and sends the select event.
-     *
-     * @param itemElement element of the item to select
-     */
+    /** Makes an item focusable: a named button, draggable when allowed, or a named image. */
+    function setItemAccessibility(itemNode, item, isDraggable) {
+        itemNode.ganttItem = item;
+        itemNode.setAttribute("tabindex", "0");
+        if (!item.id) {
+            itemNode.setAttribute("role", "img");
+            itemNode.setAttribute("aria-label", getContentAccessibleName(item));
+            return;
+        }
+        itemNode.setAttribute("role", "button");
+        itemNode.setAttribute("aria-label", getItemAccessibleName(item));
+        itemNode.setAttribute("aria-pressed", "false");
+        if (isDraggable) {
+            itemNode.className += " ganttItemDraggable";
+            itemNode.style.cursor = "move";
+            if (moveHelpId !== null) {
+                itemNode.setAttribute("aria-describedby", moveHelpId);
+            }
+        }
+    }
+
+    /** Selects an item as a click does, sending the select event. */
     function selectItemElement(itemElement) {
         if (selectedItem) {
-            selectedItem.removeClass("ganttItemSelected");
+            setItemSelected(selectedItem, false);
         }
         selectedItem = itemElement;
-        itemElement.addClass("ganttItemSelected");
+        setItemSelected(itemElement, true);
         onSelectChange();
     }
 
-    /**
-     * Returns the accessible name of a draggable item: its label, row, start and end, separated by commas, the start
-     * preceded by the description.dateFrom translation and the end by the description.dateTo translation. The label is
-     * the text the HTML-encoded item name stands for. Runs of white space become one space, and an empty part is left out.
-     *
-     * Example: name "ORD&amp;7", row "L1" and the translations "Start" and "End" give
-     * "ORD&7, L1, Start 2026-06-01 09:00:00, End 2026-06-01 10:00:00".
-     *
-     * @param item Gantt item
-     * @returns the accessible name
-     */
+    /** Toggles ganttItemSelected on items and their button aria-pressed state. */
+    function setItemSelected(itemElement, isSelected) {
+        if (isSelected) {
+            itemElement.addClass("ganttItemSelected");
+        } else {
+            itemElement.removeClass("ganttItemSelected");
+        }
+        itemElement.each(function () {
+            if (this.getAttribute("role") === "button") {
+                this.setAttribute("aria-pressed", isSelected ? "true" : "false");
+            }
+        });
+    }
+
+    /** Returns the collision item under the click listing the item, or null. */
+    function findCollisionItemAtClick(itemNode, eventObj) {
+        var x = eventObj.clientX,
+            y = eventObj.clientY,
+            collisionNodes,
+            collisionNode,
+            rect,
+            i;
+        if (_this.options.allowItemMove !== true || !isFiniteNumber(x) || !isFiniteNumber(y)) {
+            return null;
+        }
+        collisionNodes = $(itemNode).siblings(".ganttCollisionItem");
+        for (i = 0; i < collisionNodes.length; i++) {
+            collisionNode = collisionNodes[i];
+            if (!collisionListsItem(collisionNode.ganttItem, itemNode.entityId)) {
+                continue;
+            }
+            rect = collisionNode.getBoundingClientRect();
+            if (x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom) {
+                return collisionNode;
+            }
+        }
+        return null;
+    }
+
+    /** Returns whether a collision item's box lists an item id. */
+    function collisionListsItem(collisionItem, itemId) {
+        var items = collisionItem ? collisionItem.items : null,
+            i;
+        if (!items) {
+            return false;
+        }
+        for (i = 0; i < items.length; i++) {
+            if (items[i] && items[i].id === itemId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Returns an item's accessible name: decoded label, row, start and end. */
     function getItemAccessibleName(item) {
+        return joinTexts([decodeHtmlText(item.info.name)].concat(getItemPlacementTexts(item)), ", ");
+    }
+
+    /** Returns an id-less item's accessible name with its header and content lines. */
+    function getContentAccessibleName(item) {
+        var tooltip = item.info.tooltip || {},
+            content = tooltip.content || [],
+            name = decodeHtmlText(item.info.name),
+            texts = [name],
+            header,
+            i;
+        if (typeof tooltip.header === "string") {
+            header = decodeHtmlText(tooltip.header);
+            if (joinTexts([header], "") !== joinTexts([name], "")) {
+                texts.push(header);
+            }
+        }
+        for (i = 0; i < content.length; i++) {
+            texts.push(decodeHtmlText(content[i]));
+        }
+        return joinTexts(texts.concat(getItemPlacementTexts(item)), ", ");
+    }
+
+    /** Returns an item's row, start and end texts. */
+    function getItemPlacementTexts(item) {
         var translations = _this.options.translations;
-        return joinTexts([
-            decodeHtmlText(item.info.name),
+        return [
             toText(item.row),
             joinTexts([toText(translations["description.dateFrom"]), toText(item.info.dateFrom)], " "),
             joinTexts([toText(translations["description.dateTo"]), toText(item.info.dateTo)], " ")
-        ], ", ");
+        ];
     }
 
-    /**
-     * Returns the text an HTML-encoded string stands for, without creating any element from it: character references are
-     * decoded, and markup stays literal text.
-     *
-     * Example: "&lt;b&gt;A&amp;B&lt;/b&gt;" gives "<b>A&B</b>".
-     *
-     * @param html HTML-encoded string
-     * @returns the decoded text, or an empty string for null and undefined
-     */
+    /** Decodes HTML character references in a reused textarea; markup stays text. */
     function decodeHtmlText(html) {
+        var text;
         if (html === null || html === undefined) {
             return "";
         }
-        var decoder = document.createElement("textarea");
-        decoder.innerHTML = String(html);
-        return decoder.value;
+        text = String(html);
+        if (text.indexOf("&") === -1) {
+            return text;
+        }
+        if (htmlTextDecoder === null) {
+            htmlTextDecoder = document.createElement("textarea");
+        }
+        htmlTextDecoder.innerHTML = text;
+        return htmlTextDecoder.value;
     }
 
     function toText(value) {
         return value === null || value === undefined ? "" : String(value);
     }
 
-    /**
-     * Joins texts with a separator after replacing every run of white space in them with one space and trimming them;
-     * texts that are empty after trimming are left out.
-     *
-     * @param texts texts to join
-     * @param separator separator placed between two texts
-     * @returns the joined texts
-     */
+    /** Joins the white-space-collapsed, trimmed, non-empty texts with a separator. */
     function joinTexts(texts, separator) {
         var parts = [],
             text,
@@ -1072,21 +1165,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         return parts.join(separator);
     }
 
-    /**
-     * Handles a key pressed on a draggable item. Keys pressed with Alt, Ctrl or Meta are ignored. For any other key, a
-     * press, drag or keyboard move whose item is no longer in the document is discarded first; the key is then ignored
-     * while a move request is pending or a pointer press or drag is in progress, and a keyboard move of another item is
-     * cancelled before the key is handled.
-     *
-     * Without a keyboard move of the item, Enter and Space select the item as a click does, Escape hides the tooltip, and
-     * an arrow key starts a keyboard move of the item with the arrow's step; a refused first step starts no move. During
-     * a keyboard move of the item, an arrow key applies its step, Enter and Space confirm the move, and Escape cancels it.
-     * Every handled key other than Escape without a keyboard move has its default action prevented.
-     *
-     * @param eventObj keydown event
-     * @param item Gantt item of the element
-     * @param itemElement element of the item
-     */
+    /** Handles item keys: arrows move, Enter/Space select or confirm, Escape hides or cancels. */
     function onItemKeyDown(eventObj, item, itemElement) {
         var oe = eventObj.originalEvent || eventObj,
             keyCode = eventObj.which || eventObj.keyCode;
@@ -1102,11 +1181,13 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }
         if (!dragState) {
             if (keyCode === keyCodes.ENTER || keyCode === keyCodes.SPACE) {
-                eventObj.preventDefault();
-                selectItemElement(itemElement);
+                if (itemElement[0].getAttribute("role") === "button") {
+                    eventObj.preventDefault();
+                    selectItemElement(itemElement);
+                }
             } else if (keyCode === keyCodes.ESCAPE) {
-                ganttTooltip.hide();
-            } else if (isArrowKey(keyCode)) {
+                hideFocusTooltip();
+            } else if (isArrowKey(keyCode) && itemElement.hasClass("ganttItemDraggable")) {
                 eventObj.preventDefault();
                 startKeyboardMove(item, itemElement);
                 if (!applyKeyboardStep(keyCode)) {
@@ -1132,14 +1213,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             || keyCode === keyCodes.DOWN;
     }
 
-    /**
-     * Starts a keyboard move of a draggable item without a target, at zero steps in the item's row: records the item, its
-     * position, row and dates and the hours spanned by one chart cell at the header's current scale, as a pointer press
-     * does, with a null pointer id.
-     *
-     * @param item Gantt item
-     * @param itemElement element of the item
-     */
+    /** Starts a keyboard move of an item at zero steps in its row. */
     function startKeyboardMove(item, itemElement) {
         var originIndex = currentCellSettings.rows.indexOf(item.row);
         dragState = {
@@ -1163,20 +1237,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         };
     }
 
-    /**
-     * Applies the step of an arrow key to the keyboard move. Left and Right move the target start one grid step earlier or
-     * later; the target start is the snapped date that GanttChartMoveTransform.toDropDate gives for that many grid steps
-     * from the original start. Up and Down move the target one row up or down, staying between the first and the last
-     * row. A horizontal step is refused when its target start does not parse, when a step to the left would draw the item
-     * starting before the content area of the chart, and when a step to the right would draw it starting at or after the
-     * end of that area; an item drawn starting before the content area can still step to the right. An applied step
-     * stores the target, gives the item the ganttItemDragging class and the inline z-index of the drag layer with
-     * setItemDragging, places it at the target as a drag does, scrolls it into view, writes the target row and date to
-     * the tooltip body and its status live region, and shows the tooltip centred below the item.
-     *
-     * @param keyCode key code of an arrow key
-     * @returns true when the step is applied, false when it is refused, which changes nothing
-     */
+    /** Applies an arrow step, showing its target below the item; false, unchanged, if refused. */
     function applyKeyboardStep(keyCode) {
         var grid = _this.options.moveGridMinutes,
             rows = currentCellSettings.rows,
@@ -1224,15 +1285,11 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         itemRect = itemNode.getBoundingClientRect();
         body = getDragTargetBody(dragState.targetRow, date);
         ganttTooltip.setBody(body, "status");
-        ganttTooltip.show((itemRect.left + itemRect.right) / 2, itemRect.bottom, body);
+        ganttTooltip.show((itemRect.left + itemRect.right) / 2, itemRect.bottom, body, itemRect);
         return true;
     }
 
-    /**
-     * Confirms the keyboard move. A move whose target is incomplete, or equals the item's original row and date, is
-     * cancelled with cancelKeyboardMove. Otherwise the tooltip is hidden and the target is sent with sendMove, as a pointer
-     * drop sends it, with the item as the one focused after an accepted answer.
-     */
+    /** Sends the keyboard move, or cancels it when its target is incomplete or unchanged. */
     function confirmKeyboardMove() {
         var isTargetMissing = dragState.targetRow === null || dragState.targetDate === null;
         var isTargetUnchanged = dragState.targetDate === dragState.dateFrom && dragState.targetRow === dragState.originRow;
@@ -1244,33 +1301,29 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         sendMove(dragState.item.id);
     }
 
-    /**
-     * Cancels the keyboard move without sending an event: restores the item with restoreDraggedItem and hides the tooltip.
-     */
     function cancelKeyboardMove() {
         restoreDraggedItem();
         ganttTooltip.hide();
     }
 
-    /**
-     * Records a draggable item that receives the focus as the focused item, then gives it the inline z-index of
-     * updateItemLayer and the focus ring of updateItemFocusRing.
-     *
-     * @param itemElement element of the item
-     */
+    /** Styles the focused item; on :focus-visible scrolls it into view and shows an image's tooltip. */
     function onItemFocus(itemElement) {
-        focusedItemNode = itemElement[0];
+        var itemNode = itemElement[0];
+        focusedItemNode = itemNode;
         updateItemLayer(itemElement);
         updateItemFocusRing(itemElement);
+        if (dragState || !matchesFocusVisible(itemNode)) {
+            return;
+        }
+        if (itemNode.scrollIntoView) {
+            itemNode.scrollIntoView({block: "nearest", inline: "nearest"});
+        }
+        if (_this.options.hasPopupInfo && itemNode.getAttribute("role") === "img") {
+            showFocusTooltip(itemNode);
+        }
     }
 
-    /**
-     * Handles a draggable item that loses the focus: clears the focused item when it is this item, cancels the keyboard
-     * move of the item, and then updates its inline z-index with updateItemLayer, which keeps the drag layer only while
-     * the item still has the ganttItemDragging class, and removes its focus ring with updateItemFocusRing.
-     *
-     * @param itemElement element of the item
-     */
+    /** Clears the item's focus, keyboard move and focus tooltip and resets its styles. */
     function onItemBlur(itemElement) {
         if (focusedItemNode === itemElement[0]) {
             focusedItemNode = null;
@@ -1278,18 +1331,30 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         if (dragState && dragState.phase === "keyboard" && dragState.element[0] === itemElement[0]) {
             cancelKeyboardMove();
         }
+        if (focusTooltipItemNode === itemElement[0]) {
+            hideFocusTooltip();
+        }
         updateItemLayer(itemElement);
         updateItemFocusRing(itemElement);
     }
 
-    /**
-     * Returns whether a DOM element matches the :focus-visible selector, read with its matches, msMatchesSelector or
-     * webkitMatchesSelector method.
-     *
-     * @param node DOM element
-     * @returns the result of the match; true when the element has none of those methods or when the match throws, as it
-     *          does in a browser that does not support :focus-visible
-     */
+    /** Shows an item's hover tooltip below it and records its element. */
+    function showFocusTooltip(itemNode) {
+        var body = createTooltipContent(itemNode.ganttItem),
+            itemRect;
+        focusTooltipItemNode = itemNode;
+        ganttTooltip.setBody(body);
+        itemRect = itemNode.getBoundingClientRect();
+        ganttTooltip.show((itemRect.left + itemRect.right) / 2, itemRect.bottom, body, itemRect);
+    }
+
+    /** Hides the tooltip and forgets the showFocusTooltip element. */
+    function hideFocusTooltip() {
+        focusTooltipItemNode = null;
+        ganttTooltip.hide();
+    }
+
+    /** Returns whether an element matches :focus-visible, or true when that cannot be read. */
     function matchesFocusVisible(node) {
         var matches = node.matches || node.msMatchesSelector || node.webkitMatchesSelector;
         if (typeof matches !== "function") {
@@ -1302,61 +1367,36 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }
     }
 
-    /**
-     * Sets the inline focus ring of a draggable item. While the item is the focused item, its inline outline offset is
-     * constants.FOCUS_RING_OFFSET, and its inline outline is constants.FOCUS_RING_OUTLINE when it matches :focus-visible
-     * according to matchesFocusVisible and none otherwise. An item that is not the focused item loses both inline
-     * values. An empty set changes nothing.
-     *
-     * @param itemElement element of the item
-     */
+    /** Sets the focused item's ring and opacity under :focus-visible and clears them on others. */
     function updateItemFocusRing(itemElement) {
-        var itemNode = itemElement[0];
+        var itemNode = itemElement[0],
+            isRingShown;
         if (!itemNode) {
             return;
         }
         if (itemNode === focusedItemNode) {
+            isRingShown = matchesFocusVisible(itemNode);
             itemElement.css({
-                "outline": matchesFocusVisible(itemNode) ? constants.FOCUS_RING_OUTLINE : "none",
-                "outline-offset": constants.FOCUS_RING_OFFSET
+                "outline": isRingShown ? constants.FOCUS_RING_OUTLINE : "none",
+                "outline-offset": constants.FOCUS_RING_OFFSET,
+                "opacity": isRingShown && !itemElement.hasClass("ganttItemDragging") ? constants.FOCUSED_ITEM_OPACITY : ""
             });
         } else {
             itemElement.css({
                 "outline": "",
-                "outline-offset": ""
+                "outline-offset": "",
+                "opacity": ""
             });
         }
     }
 
-    /**
-     * Builds the tooltip body of a drag target: the escaped row name followed by the dateFrom label translation and the
-     * escaped date. A missing row or date renders as an empty string, and so does a missing label translation.
-     *
-     * @param row name of the target row, or null
-     * @param date target start date, or null
-     * @returns HTML of the tooltip body
-     */
     function getDragTargetBody(row, date) {
         return "<div class='ganttItemDescriptionName'>" + moveTransform.escapeHtml(row) + "</div>"
             + "<div class='ganttItemDescriptionInfo'><div class='ganttItemDescriptionLabel'>" + (_this.options.translations["description.dateFrom"] || "") + "</div>"
             + "<div class='ganttItemDescriptionValue'>" + moveTransform.escapeHtml(date) + "</div></div>";
     }
 
-    /**
-     * Starts a pending press of a draggable item with the primary button: captures the pointer on the item with the
-     * item's setPointerCapture and records the item's position, row, dates and the pointer start. Every pointerdown first
-     * discards a press or drag whose item is no longer in the document and then cancels a keyboard move with
-     * cancelKeyboardMove. A primary-button pointerdown with valid pointer input on the item of the click suppression ends
-     * that suppression. Ignored for any other button, for a pointerdown without an integral pointer id and finite
-     * coordinates, and while a press, drag or move request is in progress. Any other pointerdown has its default action
-     * prevented and is ignored, with a QCD.debug message, when the item has no setPointerCapture method, when
-     * setPointerCapture throws, or when the item has hasPointerCapture and it reports afterwards that the item does not
-     * hold the pointer.
-     *
-     * @param eventObj pointerdown event
-     * @param item pressed Gantt item
-     * @param itemElement element of the pressed item
-     */
+    /** Starts a captured primary-button press at the pointer; other presses are ignored. */
     function startPress(eventObj, item, itemElement) {
         var oe = eventObj.originalEvent || eventObj;
         discardDetachedDrag();
@@ -1399,6 +1439,8 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             preDragTop: itemElement.css("top"),
             startX: oe.clientX,
             startY: oe.clientY,
+            startContentX: oe.clientX - htmlElements.rowsContainer[0].getBoundingClientRect().left,
+            lastPoint: {clientX: oe.clientX, clientY: oe.clientY},
             dateFrom: item.info.dateFrom,
             dateTo: item.info.dateTo,
             hoursInterval: _this.options.zoomHoursIntervals[header.getCurrentParameters().scale],
@@ -1407,14 +1449,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         };
     }
 
-    /**
-     * Follows the pointer of the current press. A pending press becomes an active drag once the pointer has travelled
-     * DRAG_THRESHOLD_PX on either axis; the item then gets the ganttItemDragging class and the inline z-index of the drag
-     * layer with setItemDragging, and the hover tooltip is hidden. An active drag moves the item to the snapped target. A
-     * pointermove of the tracked pointer without finite coordinates abandons the press or drag.
-     *
-     * @param eventObj pointermove event
-     */
+    /** Records the pointer, starts a drag past DRAG_THRESHOLD_PX and updates the target. */
     function onDragMove(eventObj) {
         var oe = eventObj.originalEvent || eventObj;
         if (!isTrackedPointer(oe)) {
@@ -1424,6 +1459,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             abandonDrag();
             return;
         }
+        dragState.lastPoint = {clientX: oe.clientX, clientY: oe.clientY};
         if (dragState.phase === "pending") {
             if (Math.abs(oe.clientX - dragState.startX) < moveTransform.DRAG_THRESHOLD_PX
                     && Math.abs(oe.clientY - dragState.startY) < moveTransform.DRAG_THRESHOLD_PX) {
@@ -1436,50 +1472,73 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         updateDragTarget(oe);
     }
 
-    /**
-     * Resolves the snapped date and the row under the pointer of the current drag; the position of the rows content is
-     * read before anything is written. When the date or the row differs from the stored drag target, or the tooltip is
-     * hidden, stores both as the drag target, writes the target row and date to the tooltip body and its status live
-     * region, shows the tooltip at the pointer, and then places the dragged item at the snapped date and, when the pointer
-     * is over a row, in that row. Otherwise only moves the visible tooltip to the pointer, leaving the item and the
-     * tooltip body unchanged.
-     *
-     * @param oe native pointer event
-     */
-    function updateDragTarget(oe) {
-        var contentY = oe.clientY - htmlElements.rowsContainer[0].getBoundingClientRect().top,
-            date = moveTransform.toDropDate(dragState.dateFrom, oe.clientX - dragState.startX, dragState.hoursInterval, constants.CELL_WIDTH, _this.options.moveGridMinutes),
+    /** Returns the rows content, visible pane and cell rectangles of the drop area. */
+    function readDropArea() {
+        var wrapperElement = htmlElements.rowsContainerWrapper[0],
+            wrapperRect = wrapperElement.getBoundingClientRect(),
+            rowsRect = htmlElements.rowsContainer[0].getBoundingClientRect();
+        return {
+            rowsRect: rowsRect,
+            visibleRect: {
+                left: wrapperRect.left,
+                top: wrapperRect.top,
+                right: wrapperRect.left + wrapperElement.clientWidth,
+                bottom: wrapperRect.top + wrapperElement.clientHeight
+            },
+            contentRect: {
+                left: rowsRect.left,
+                top: rowsRect.top,
+                right: rowsRect.left + getTotalNumberOfCells(currentCellSettings) * constants.CELL_WIDTH,
+                bottom: rowsRect.top + currentCellSettings.rows.length * constants.CELL_HEIGHT
+            }
+        };
+    }
+
+    /** Builds the tooltip body of a drag outside the drop area. */
+    function getReleaseToCancelBody() {
+        return "<div class='ganttItemDescriptionInfo'>" + (_this.options.translations["move.releaseToCancel"] || "") + "</div>";
+    }
+
+    /** Sets the drag target and tooltip at a point, none outside the drop area; true inside. */
+    function updateDragTarget(point) {
+        var dropArea = readDropArea(),
+            isInsideDropArea = moveTransform.isValidDropPoint({x: point.clientX, y: point.clientY}, dropArea.visibleRect,
+                dropArea.contentRect),
+            contentY = point.clientY - dropArea.rowsRect.top,
+            contentDeltaX = (point.clientX - dropArea.rowsRect.left) - dragState.startContentX,
+            date = null,
+            row = null,
+            body;
+        if (isInsideDropArea) {
+            date = moveTransform.toDropDate(dragState.dateFrom, contentDeltaX, dragState.hoursInterval, constants.CELL_WIDTH, _this.options.moveGridMinutes);
             row = moveTransform.resolveDropRow(contentY, constants.CELL_HEIGHT, currentCellSettings.rows);
+        }
         if (date === dragState.targetDate && row === dragState.targetRow) {
-            if (ganttTooltip.moveTo(oe.clientX, oe.clientY)) {
-                return;
+            if (ganttTooltip.moveTo(point.clientX, point.clientY)) {
+                return isInsideDropArea;
             }
         }
         dragState.targetDate = date;
         dragState.targetRow = row;
 
-        var body = getDragTargetBody(row, date);
+        body = isInsideDropArea ? getDragTargetBody(row, date) : getReleaseToCancelBody();
         ganttTooltip.setBody(body, "status");
-        ganttTooltip.show(oe.clientX, oe.clientY, body);
+        ganttTooltip.show(point.clientX, point.clientY, body);
 
+        if (!isInsideDropArea) {
+            dragState.element.css("left", dragState.preDragLeft);
+            dragState.element.css("top", dragState.preDragTop);
+            return false;
+        }
         dragState.element.css("left", (parseFloat(dragState.preDragLeft) + moveTransform.toPixelDelta(dragState.dateFrom, date, dragState.hoursInterval, constants.CELL_WIDTH)) + "px");
         if (row !== null) {
-            // Index of the row under the pointer, derived from contentY as resolveDropRow derives it.
             var targetIndex = Math.floor(contentY / constants.CELL_HEIGHT);
             dragState.element.css("top", (1 + (targetIndex - dragState.originIndex) * constants.CELL_HEIGHT) + "px");
         }
+        return true;
     }
 
-    /**
-     * Ends the current press on pointer release. A pending press ends without a move, leaving the click to select the item.
-     * An active drag hides the tooltip, ignores the next click on the dragged item for constants.CLICK_SUPPRESSION_MS
-     * or until the next primary-button pointerdown on that item, and either restores the item with restoreDraggedItem,
-     * when the drop point lies outside the visible rows content, the target is incomplete, or the target equals the
-     * original row and date, or sends the target with sendMove, with no item focused after an accepted answer. A
-     * pointerup of the tracked pointer without finite coordinates abandons the press or drag without sending an event.
-     *
-     * @param eventObj pointerup event
-     */
+    /** Ends the press on release: a drag sends its target, or restores the item for an invalid drop. */
     function endDrag(eventObj) {
         var oe = eventObj.originalEvent || eventObj;
         if (!isTrackedPointer(oe)) {
@@ -1494,30 +1553,13 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             return;
         }
 
-        updateDragTarget(oe);
+        var isDropPointValid = updateDragTarget(oe);
         ganttTooltip.hide();
         clickSuppression = {
             element: dragState.element[0],
             expiresAt: new Date().getTime() + constants.CLICK_SUPPRESSION_MS
         };
 
-        var wrapperElement = htmlElements.rowsContainerWrapper[0];
-        var wrapperRect = wrapperElement.getBoundingClientRect();
-        var visibleRect = {
-            left: wrapperRect.left,
-            top: wrapperRect.top,
-            right: wrapperRect.left + wrapperElement.clientWidth,
-            bottom: wrapperRect.top + wrapperElement.clientHeight
-        };
-        var rowsRect = htmlElements.rowsContainer[0].getBoundingClientRect();
-        var contentRect = {
-            left: rowsRect.left,
-            top: rowsRect.top,
-            right: rowsRect.left + getTotalNumberOfCells(currentCellSettings) * constants.CELL_WIDTH,
-            bottom: rowsRect.top + currentCellSettings.rows.length * constants.CELL_HEIGHT
-        };
-
-        var isDropPointValid = moveTransform.isValidDropPoint({x: oe.clientX, y: oe.clientY}, visibleRect, contentRect);
         var isTargetMissing = dragState.targetRow === null || dragState.targetDate === null;
         var isTargetUnchanged = dragState.targetDate === dragState.dateFrom && dragState.targetRow === dragState.originRow;
         if (!isDropPointValid || isTargetMissing || isTargetUnchanged) {
@@ -1528,17 +1570,9 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         sendMove(null);
     }
 
-    /**
-     * Sends the target of the current drag or keyboard move: empties the status live region, blocks the chart, records
-     * the pending move and the item to focus after an accepted answer, clears the drag state and sends the moveItem event
-     * with the arguments of GanttChartMoveTransform.buildMoveArgs through callMoveEvent. When callMoveEvent returns the
-     * jQuery request of the event, onMoveComplete is also registered with its fail method, so it runs as well when jQuery
-     * rejects that request.
-     *
-     * @param focusItemId id of the item that receives the focus once the board is rebuilt from an accepted answer, or null
-     *                    to leave the focus unchanged
-     */
+    /** Dismisses any rejection, blocks the chart, records the pending move and sends moveItem. */
     function sendMove(focusItemId) {
+        dismissRejection();
         ganttTooltip.announce("", "status");
         QCD.components.elements.utils.LoadingIndicator.blockElement(element);
         pendingMove = {
@@ -1556,15 +1590,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }
     }
 
-    /**
-     * Calls mainController.callEvent with the moveItem event, the chart's element path, onMoveComplete and the given
-     * arguments. While the call runs, a handler of the ajaxSend event bound on the document keeps the jqXHR of the first
-     * request whose data isMoveRequestData accepts for these arguments; the handler is unbound when the call returns or
-     * throws.
-     *
-     * @param args moveItem arguments of GanttChartMoveTransform.buildMoveArgs
-     * @returns the jqXHR of the moveItem request sent during the call, or null when no such request was sent
-     */
+    /** Calls the moveItem event and returns its jqXHR, or null when no request was sent. */
     function callMoveEvent(args) {
         var moveRequest = null;
         var captureMoveRequest = function (event, jqXHR, settings) {
@@ -1581,15 +1607,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         return moveRequest;
     }
 
-    /**
-     * Returns whether the data of a jQuery request is the JSON text of a moveItem event sent with the given arguments.
-     *
-     * @param data data of the request
-     * @param args moveItem arguments of GanttChartMoveTransform.buildMoveArgs
-     * @returns true when data is a string that parses as JSON to an object whose event has the name "moveItem" and an
-     *          args array whose first element is identical to the first element of args; false otherwise, including
-     *          for data that is not valid JSON
-     */
+    /** Returns whether request data is the JSON of a moveItem event with these arguments. */
     function isMoveRequestData(data, args) {
         var parameters;
         if (typeof data !== "string") {
@@ -1605,11 +1623,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             && $.isArray(parameters.event.args) && parameters.event.args[0] === args[0];
     }
 
-    /**
-     * Runs when the moveItem request completes or jQuery rejects it; one request can do both. After the current call
-     * stack, restores the item of the pending move and unblocks the chart when a move is still pending, that is when no
-     * moveResult has been handled for it; without a pending move it changes nothing.
-     */
+    /** After the current call stack, restores the item and unblocks the chart when its move is still pending. */
     function onMoveComplete() {
         setTimeout(function () {
             if (pendingMove) {
@@ -1620,12 +1634,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }, 0);
     }
 
-    /**
-     * Cancels the current press or drag of the same pointer: restores the item with restoreDraggedItem and hides the
-     * tooltip without sending an event.
-     *
-     * @param eventObj pointercancel or lostpointercapture event
-     */
+    /** Cancels the press or drag of the event's pointer and hides the tooltip. */
     function cancelDrag(eventObj) {
         var oe = eventObj.originalEvent || eventObj;
         if (!dragState || oe.pointerId !== dragState.pointerId) {
@@ -1635,11 +1644,6 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         ganttTooltip.hide();
     }
 
-    /**
-     * Cancels the current press or drag when the item loses the capture of its pointer before the pointer is released.
-     *
-     * @param eventObj lostpointercapture event
-     */
     function onLostPointerCapture(eventObj) {
         var oe = eventObj.originalEvent || eventObj;
         if (dragState && oe.pointerId === dragState.pointerId) {
@@ -1647,40 +1651,21 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }
     }
 
-    /**
-     * Sets the left and top of the state's element to the preDragLeft and preDragTop stored in the state, leaving a
-     * coordinate whose stored value is undefined unchanged, and removes the ganttItemDragging class and the inline
-     * z-index of the drag layer with setItemDragging, which leaves the focused item at the inline z-index of a focused
-     * item. For a pending move, rebindPendingMove may have replaced the stored values with the coordinates of a
-     * re-rendered element.
-     *
-     * @param state drag state or pending move holding element, preDragLeft and preDragTop
-     */
+    /** Restores the stored left and top of the state's element and ends its drag layer. */
     function restoreItemPosition(state) {
         state.element.css("left", state.preDragLeft);
         state.element.css("top", state.preDragTop);
         setItemDragging(state.element, false);
     }
 
-    /**
-     * Adds the ganttItemDragging class to a draggable item, or removes it, and then sets the item's inline z-index with
-     * updateItemLayer. It is the only code that adds or removes that class.
-     *
-     * @param itemElement element of the item; an empty set changes nothing
-     * @param isDragging true to add the class, false to remove it
-     */
+    /** Toggles ganttItemDragging and updates the item's layer and focus ring. */
     function setItemDragging(itemElement, isDragging) {
         itemElement.toggleClass("ganttItemDragging", isDragging);
         updateItemLayer(itemElement);
+        updateItemFocusRing(itemElement);
     }
 
-    /**
-     * Sets the inline z-index of a draggable item: constants.DRAGGING_ITEM_Z_INDEX while it has the ganttItemDragging
-     * class, otherwise constants.FOCUSED_ITEM_Z_INDEX while it is the focused item, otherwise none, which leaves the
-     * z-index of the stylesheet. An empty set changes nothing.
-     *
-     * @param itemElement element of the item
-     */
+    /** Sets the z-index of a dragged or :focus-visible focused item, clearing it on others. */
     function updateItemLayer(itemElement) {
         var itemNode = itemElement[0];
         if (!itemNode) {
@@ -1688,17 +1673,14 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         }
         if (itemElement.hasClass("ganttItemDragging")) {
             itemElement.css("z-index", constants.DRAGGING_ITEM_Z_INDEX);
-        } else if (itemNode === focusedItemNode) {
+        } else if (itemNode === focusedItemNode && matchesFocusVisible(itemNode)) {
             itemElement.css("z-index", constants.FOCUSED_ITEM_Z_INDEX);
         } else {
             itemElement.css("z-index", "");
         }
     }
 
-    /**
-     * Returns the item of the current press, drag or keyboard move to its position before the drag, announces the
-     * cancellation of a drag or keyboard move with announceCancelledMove, and clears the drag state.
-     */
+    /** Restores the dragged item, announces a cancellation and clears the drag state. */
     function restoreDraggedItem() {
         if (dragState) {
             restoreItemPosition(dragState);
@@ -1707,11 +1689,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         dragState = null;
     }
 
-    /**
-     * Ends the current press, drag or keyboard move, if any, without sending an event: releases the pointer capture the
-     * item of a press or drag still holds, restores the item, hides the tooltip, announces the cancellation of a drag or
-     * keyboard move with announceCancelledMove, and clears the drag state.
-     */
+    /** Ends any press, drag or keyboard move without an event and hides the tooltip. */
     function abandonDrag() {
         if (!dragState) {
             return;
@@ -1727,35 +1705,19 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         dragState = null;
     }
 
-    /**
-     * Announces that a move ended without a request: for an active drag or a keyboard move, the
-     * move.cancelledAnnouncement translation, or an empty text when it is missing, replaces the content of the status
-     * live region. A pending press announces nothing.
-     *
-     * @param state drag state of the ended press, drag or keyboard move
-     */
+    /** Announces that an active drag or keyboard move ended without a request. */
     function announceCancelledMove(state) {
         if (state.phase !== "pending") {
             ganttTooltip.announce(_this.options.translations["move.cancelledAnnouncement"] || "", "status");
         }
     }
 
-    /**
-     * Abandons the current press, drag or keyboard move when its item is no longer in the document.
-     */
     function discardDetachedDrag() {
         if (dragState && !$.contains(document.documentElement, dragState.element[0])) {
             abandonDrag();
         }
     }
 
-    /**
-     * Returns whether a pointer event belongs to the pointer of the current press or drag, after discarding a press or
-     * drag whose item is no longer in the document.
-     *
-     * @param oe native pointer event
-     * @returns true when a press or drag is in progress and the event carries its pointer id
-     */
     function isTrackedPointer(oe) {
         discardDetachedDrag();
         return dragState !== null && oe.pointerId === dragState.pointerId;
@@ -1765,26 +1727,13 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         return typeof value === "number" && isFinite(value);
     }
 
-    /**
-     * Returns whether a pointer event carries an integral pointer id within the 32-bit signed integer range and finite
-     * clientX and clientY coordinates.
-     *
-     * @param oe native pointer event
-     * @returns true when the pointer id is such an integer and both coordinates are finite numbers
-     */
+    /** Returns whether a pointer event has a 32-bit integer pointer id and finite client coordinates. */
     function isValidPointerInput(oe) {
         return isFiniteNumber(oe.pointerId) && oe.pointerId % 1 === 0 && oe.pointerId >= -2147483648
             && oe.pointerId <= 2147483647 && isFiniteNumber(oe.clientX) && isFiniteNumber(oe.clientY);
     }
 
-    /**
-     * Returns whether a click on an item is ignored: true, ending the click suppression, when the click lands on the
-     * dragged item before the suppression expires. An expired suppression ends at any item click; a click on another
-     * item leaves an unexpired suppression in place.
-     *
-     * @param itemNode DOM element of the clicked item
-     * @returns true when the click is ignored
-     */
+    /** Returns true, ending the suppression, for a click on the dragged item before it expires. */
     function consumeClickSuppression(itemNode) {
         if (clickSuppression === null) {
             return false;
@@ -1842,15 +1791,7 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
     constructor();
 };
 
-/**
- * Inline CSS map, passed to jQuery's css method, that hides an element visually while keeping it rendered and in the
- * accessibility tree: the element is positioned absolutely as a 1 x 1 px box with a -1px margin, no padding and no
- * border, clipped to nothing, its text kept on one line, and it never receives pointer events. The Gantt chart applies it
- * to its keyboard move instructions element and to the live regions of its tooltip.
- *
- * Example: $("<div>").css(QCD.components.elements.GanttChartVisuallyHiddenStyle) gives an element that screen readers
- * read and that is not shown.
- */
+/** Inline CSS map that hides an element visually while keeping it in the accessibility tree. */
 QCD.components.elements.GanttChartVisuallyHiddenStyle = {
     "position": "absolute",
     "width": "1px",
@@ -1872,11 +1813,21 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
 
     var htmlElements = {};
 
-    // liveRegions: live regions of the chart element keyed by role, "status" and "alert", or null while live feedback is
-    // not enabled. measuredSize: tooltip size measured by moveTo, with width, height and bodyNode, the first node of the
-    // tooltip body when measured, or null before the first measurement.
+    // Live regions by role, the size moveTo measured and the move layout flag.
     var liveRegions = null,
-        measuredSize = null;
+        measuredSize = null,
+        moveLayout = false;
+
+    // Move layout styles: stylesheet z-index, no pointer events, wrapped words.
+    var moveLayoutStyle = {
+        "z-index": "",
+        "pointer-events": "none",
+        "overflow-wrap": "anywhere",
+        "word-break": "break-word"
+    };
+
+    // Owner and first body node that showFor recorded, or null.
+    var bodyOwner = null;
 
     function constructor() {
         createTooltip();
@@ -1895,14 +1846,7 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         element.append(htmlElements.tooltipElement);
     }
 
-    /**
-     * Appends to the chart element an empty and atomic live region, hidden visually and from the pointer by the inline
-     * GanttChartVisuallyHiddenStyle map.
-     *
-     * @param role ARIA role of the region
-     * @param politeness aria-live value of the region
-     * @returns the region element
-     */
+    /** Appends a visually hidden, atomic live region to the chart element. */
     function createLiveRegion(role, politeness) {
         var region = $("<div>").addClass("ganttChartLiveRegion");
         region.attr({
@@ -1915,10 +1859,7 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         return region;
     }
 
-    /**
-     * Enables live feedback: appends to the chart element a polite status region and an assertive alert region, which
-     * setBody and announce fill when asked to. Later calls change nothing.
-     */
+    /** Appends the polite status and assertive alert live regions once. */
     this.enableLiveFeedback = function () {
         if (liveRegions) {
             return;
@@ -1929,18 +1870,16 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         };
     };
 
-    /**
-     * Replaces the tooltip body, whether the tooltip is visible or hidden. With live feedback enabled and a liveRole of
-     * "status" or "alert", the content of that live region is also replaced by a new element holding the text of the new
-     * body: its trimmed, non-empty text nodes in document order, joined by single spaces.
-     *
-     * Example: setBody("<div>L2</div><div><div>Start</div><div>2026-06-01 10:00:00</div></div>", "status") puts
-     * "L2 Start 2026-06-01 10:00:00" in the status region.
-     *
-     * @param body HTML of the new body
-     * @param liveRole optional role of the live region that announces the new body, "status" or "alert"; any other value,
-     *                 or a tooltip without live feedback, leaves the live regions unchanged
-     */
+    /** Applies moveLayoutStyle once; measurements then use the border box at left 0. */
+    this.enableMoveLayout = function () {
+        if (moveLayout) {
+            return;
+        }
+        moveLayout = true;
+        htmlElements.tooltipElement.css(moveLayoutStyle);
+    };
+
+    /** Replaces the tooltip body and writes its text to the "status" or "alert" live region named by liveRole. */
     this.setBody = function (body, liveRole) {
         htmlElements.tooltipBodyWrapper.html(body);
         if (liveRegions && Object.prototype.hasOwnProperty.call(liveRegions, liveRole)) {
@@ -1948,18 +1887,7 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         }
     };
 
-    /**
-     * Replaces the content of a live region, leaving the tooltip unchanged. With live feedback enabled and a liveRole of
-     * "status" or "alert", the content of that live region is replaced by a new element holding the text; an empty,
-     * null or undefined text leaves the region empty.
-     *
-     * Example: announce("Move saved.", "status") puts "Move saved." in the status region, and announce("", "status")
-     * empties it.
-     *
-     * @param text text to announce, written as text and never parsed as HTML
-     * @param liveRole role of the live region, "status" or "alert"; any other value, or a tooltip without live feedback,
-     *                 leaves the live regions unchanged
-     */
+    /** Replaces the content of the "status" or "alert" live region with a text. */
     this.announce = function (text, liveRole) {
         if (!liveRegions || !Object.prototype.hasOwnProperty.call(liveRegions, liveRole)) {
             return;
@@ -1970,15 +1898,25 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         }
     };
 
-    /**
-     * Moves the visible tooltip to the position show would give it for a pointer position, without writing its body. The
-     * tooltip is measured on the first call and again after its body content has been replaced, by setBody or by show;
-     * other calls reuse that measurement. A hidden tooltip is left unchanged.
-     *
-     * @param x horizontal viewport position of the pointer
-     * @param y vertical viewport position of the pointer
-     * @returns true when the tooltip is visible and has been moved, false when it is hidden
-     */
+    /** Shows an owner's body, replacing another owner's, and records the owner. */
+    this.showFor = function (owner, x, y, body, anchor) {
+        if (visible && !this.isShowing(owner)) {
+            htmlElements.tooltipBodyWrapper.html(body);
+        }
+        this.show(x, y, body, anchor);
+        bodyOwner = {
+            owner: owner,
+            node: htmlElements.tooltipBodyWrapper[0].firstChild
+        };
+    };
+
+    /** Returns whether the visible tooltip still shows the owner's showFor body. */
+    this.isShowing = function (owner) {
+        return visible && owner !== null && owner !== undefined && bodyOwner !== null && bodyOwner.owner === owner
+            && bodyOwner.node !== null && bodyOwner.node === htmlElements.tooltipBodyWrapper[0].firstChild;
+    };
+
+    /** Moves the visible tooltip to a pointer, measuring each body once; false when hidden. */
     this.moveTo = function (x, y) {
         if (!visible) {
             return false;
@@ -1986,22 +1924,20 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         var bodyNode = htmlElements.tooltipBodyWrapper[0].firstChild,
             position;
         if (!measuredSize || measuredSize.bodyNode !== bodyNode) {
-            measuredSize = {
-                width: htmlElements.tooltipElement.width(),
-                height: htmlElements.tooltipElement.height(),
-                bodyNode: bodyNode
-            };
+            measuredSize = measureTooltip();
+            measuredSize.bodyNode = bodyNode;
         }
         position = calculatePosition(x, y, measuredSize);
         htmlElements.tooltipElement.css("left", position.x).css("top", position.y);
         return true;
     };
 
-    this.show = function (x, y, body) {
+    /** Shows the tooltip at a point or anchor, writing the body only while hidden. */
+    this.show = function (x, y, body, anchor) {
         if (!visible) {
             htmlElements.tooltipBodyWrapper.html(body);
         }
-        var position = calculatePosition(x, y);
+        var position = calculatePosition(x, y, undefined, anchor);
         htmlElements.tooltipElement.css("left", position.x).css("top", position.y);
         if (!visible) {
             visible = true;
@@ -2019,21 +1955,24 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         visible = false;
     };
 
-    /**
-     * Calculates the viewport position of the tooltip for a pointer position. The tooltip is centred horizontally on the
-     * pointer with its top 20 px below it. When its left edge would lie left of 20 px, it starts at 20 px; otherwise, when
-     * its right edge would lie right of the window width less 40 px, it is moved left to end there. When its bottom would
-     * lie below the window height less 20 px, it is placed with its bottom 20 px above the pointer. A tooltip wider than
-     * the window width less 60 px cannot keep both horizontal margins: it either starts at 20 px and ends right of the
-     * 40 px margin or ends at that margin and starts left of 20 px, and a wide enough one extends past that side of the
-     * window. A tooltip placed above the pointer can extend past the top of the window.
-     *
-     * @param x horizontal viewport position of the pointer
-     * @param y vertical viewport position of the pointer
-     * @param size optional tooltip size with width and height; without it the tooltip is measured
-     * @returns position with x and y
-     */
-    function calculatePosition(x, y, size) {
+    /** Returns the tooltip's content size, or its border box at left 0 with the move layout. */
+    function measureTooltip() {
+        if (!moveLayout) {
+            return {
+                width: htmlElements.tooltipElement.width(),
+                height: htmlElements.tooltipElement.height()
+            };
+        }
+        htmlElements.tooltipElement.css("left", "0px");
+        var rect = htmlElements.tooltipElement[0].getBoundingClientRect();
+        return {
+            width: rect.width,
+            height: rect.height
+        };
+    }
+
+    /** Returns the position 20 px below the point or anchor, or above near the bottom, within margins. */
+    function calculatePosition(x, y, size, anchor) {
         var spacing = {
             top: 20,
             right: 40,
@@ -2044,11 +1983,12 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         var windowWidth = $(window).width();
         var windowHeight = $(window).height();
 
-        var tooltipWidth = size ? size.width : htmlElements.tooltipElement.width();
-        var tooltipHeight = size ? size.height : htmlElements.tooltipElement.height();
+        var tooltipSize = size || measureTooltip();
+        var tooltipWidth = tooltipSize.width;
+        var tooltipHeight = tooltipSize.height;
 
         var calcX = x - (tooltipWidth / 2);
-        var calcY = y + 20;
+        var calcY = (anchor ? anchor.bottom : y) + 20;
 
         if (calcX < spacing.left) {
             calcX = spacing.left;
@@ -2057,7 +1997,7 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         }
 
         if (calcY + tooltipHeight > windowHeight - spacing.bottom) {
-            calcY = y - tooltipHeight - 20;
+            calcY = (anchor ? anchor.top : y) - tooltipHeight - 20;
         }
 
         return {
@@ -2066,23 +2006,13 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
         }
     }
 
-    /**
-     * Returns the text of the tooltip body.
-     *
-     * @returns the trimmed, non-empty text nodes of the body in document order, joined by single spaces
-     */
     function getBodyText() {
         var parts = [];
         collectTextNodes(htmlElements.tooltipBodyWrapper[0], parts);
         return parts.join(" ");
     }
 
-    /**
-     * Appends the trimmed, non-empty text of every text node below a node to a list, in document order.
-     *
-     * @param node DOM node whose descendants are read
-     * @param parts list receiving the texts
-     */
+    /** Appends the trimmed, non-empty texts of the text nodes below a node to parts. */
     function collectTextNodes(node, parts) {
         var child, text;
         for (child = node.firstChild; child; child = child.nextSibling) {
