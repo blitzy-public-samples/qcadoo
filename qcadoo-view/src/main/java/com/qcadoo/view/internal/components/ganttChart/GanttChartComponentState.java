@@ -191,6 +191,13 @@ public class GanttChartComponentState extends AbstractComponentState {
     /** Whether {@link #acceptMove()} has finished re-resolving the chart of the accepted move of this request. */
     private boolean acceptedChartRefreshed;
 
+    /**
+     * Exception thrown while {@link #initializeContent(JSONObject)} read the component content of this request: a
+     * {@link JSONException} or a runtime exception. Null when the content was read, and while the request has carried no
+     * content.
+     */
+    private Exception contentReadFailure;
+
     public GanttChartComponentState(final GanttChartItemResolver itemResolver, final GanttChartComponentPattern pattern) {
         super(pattern);
         this.itemResolver = itemResolver;
@@ -201,6 +208,9 @@ public class GanttChartComponentState extends AbstractComponentState {
         this.itemsBorderWidth = pattern.getItemsBorderWidth();
         this.itemsBorderColor = pattern.getItemsBorderColor();
         this.allowItemMove = pattern.isAllowItemMove();
+        registerEvent("refresh", eventPerformer, "rethrowContentReadFailure");
+        registerEvent("initialize", eventPerformer, "rethrowContentReadFailure");
+        registerEvent("select", eventPerformer, "rethrowContentReadFailure");
         registerEvent("refresh", eventPerformer, "refresh");
         registerEvent("initialize", eventPerformer, "initialize");
         registerEvent("select", eventPerformer, "selectEntity");
@@ -235,8 +245,67 @@ public class GanttChartComponentState extends AbstractComponentState {
         return context.optString(key);
     }
 
+    /**
+     * Reads the component content through {@link #readContent(JSONObject)}. A {@link JSONException} or runtime exception
+     * thrown there does not propagate: it is recorded, and replaces the exception recorded by an earlier call. Content read
+     * without an exception clears the record. While a failure is recorded:
+     * <ul>
+     * <li>the moveItem event rejects the move as an invalid request, or as disabled when the component does not allow item
+     * moves, without resolving items;</li>
+     * <li>the refresh, initialize and select events fail with the recorded exception before their handlers run;</li>
+     * <li>{@link #renderContent()} throws the recorded exception while no move result is set.</li>
+     * </ul>
+     * <p>
+     * For example, content whose {@code headerParameters} hold the scale {@code "X"} records the
+     * {@link IllegalArgumentException} of {@link ZoomLevel#valueOf(String)}, and content without {@code headerParameters}
+     * records a {@link JSONException}.
+     *
+     * @param json
+     *            component content of the request
+     */
     @Override
-    protected void initializeContent(final JSONObject json) throws JSONException {
+    protected void initializeContent(final JSONObject json) {
+        contentReadFailure = null;
+        try {
+            readContent(json);
+        } catch (JSONException e) {
+            contentReadFailure = e;
+        } catch (RuntimeException e) {
+            contentReadFailure = e;
+        }
+    }
+
+    /**
+     * Throws the exception recorded by {@link #initializeContent(JSONObject)}: a {@link JSONException} as it is, and any other
+     * recorded exception, which is a runtime exception, unchanged. Returns without throwing when none is recorded.
+     *
+     * @throws JSONException
+     *             the recorded {@link JSONException}
+     */
+    private void throwContentReadFailure() throws JSONException {
+        if (contentReadFailure == null) {
+            return;
+        }
+        if (contentReadFailure instanceof JSONException) {
+            throw (JSONException) contentReadFailure;
+        }
+        throw (RuntimeException) contentReadFailure;
+    }
+
+    /**
+     * Reads the component content: the zoom level, dates and error messages of the {@code headerParameters} object, which
+     * build the chart scale, and the selected entity id when the content holds one.
+     *
+     * @param json
+     *            component content of the request
+     * @throws JSONException
+     *             when {@code headerParameters} is missing or not an object, when it holds no {@code scale},
+     *             {@code dateFrom} or {@code dateTo}, or when a {@code selectedEntityId} is neither a number nor the text of
+     *             one
+     * @throws IllegalArgumentException
+     *             when the text of {@code scale} names no {@link ZoomLevel}
+     */
+    private void readContent(final JSONObject json) throws JSONException {
 
         JSONObject headerDataObject = json.getJSONObject("headerParameters");
 
@@ -293,6 +362,9 @@ public class GanttChartComponentState extends AbstractComponentState {
      * <ul>
      * <li>a null move result, which holds while neither the moveItem event nor {@link #rejectMove(String, String...)} has run
      * in this request: the chart without a {@code moveResult} key;</li>
+     * <li>a null move result while {@link #initializeContent(JSONObject)} has recorded a failure to read the component
+     * content: throws the recorded exception, a {@link JSONException} as it is and a runtime exception unchanged, and
+     * renders nothing;</li>
      * <li>a move result that is not accepted, including one set by {@link #rejectMove(String, String...)} without a moveItem
      * event: only that {@code moveResult};</li>
      * <li>an accepted move whose chart {@link #acceptMove()} has re-resolved: the whole chart together with its
@@ -304,7 +376,8 @@ public class GanttChartComponentState extends AbstractComponentState {
      *
      * @return the rendered content
      * @throws JSONException
-     *             when the chart cannot be written as JSON
+     *             when the chart cannot be written as JSON, or the {@link JSONException} recorded while the component content
+     *             was read
      * @throws IllegalStateException
      *             when the chart of the accepted move has not been re-resolved
      */
@@ -312,6 +385,7 @@ public class GanttChartComponentState extends AbstractComponentState {
     protected JSONObject renderContent() throws JSONException {
 
         if (moveResult == null) {
+            throwContentReadFailure();
             return renderChart();
         }
 
@@ -522,6 +596,20 @@ public class GanttChartComponentState extends AbstractComponentState {
         }
 
         /**
+         * Handles the refresh, initialize and select events ahead of their other handlers: throws the exception recorded while
+         * the component content of this request was read, a {@link JSONException} as it is and a runtime exception
+         * unchanged, and returns without any effect when none is recorded.
+         *
+         * @param args
+         *            event arguments, not read
+         * @throws JSONException
+         *             the recorded {@link JSONException}
+         */
+        public void rethrowContentReadFailure(final String[] args) throws JSONException {
+            throwContentReadFailure();
+        }
+
+        /**
          * Handles the moveItem event through {@link #performMoveItem(String[])}. A runtime exception thrown there is handled by
          * {@link #failMove(RuntimeException)}: it is logged, no move request is exposed, and the move result becomes "not
          * handled" for the item id known so far. A runtime exception thrown while that failure is handled, such as by the
@@ -559,8 +647,9 @@ public class GanttChartComponentState extends AbstractComponentState {
          * {@code originalDateFrom} and {@code originalDateTo}; dates use the canonical {@value DateUtils#L_DATE_TIME_FORMAT}
          * format and {@code dateFrom} is a wall-clock time of the JVM default time zone.
          * <p>
-         * The checks run in this order and the first failure rejects the move: moves allowed by the component, a valid chart
-         * scale, a payload that passes {@link #parseMovePayload(String[])}, a component context within the bounds of
+         * The checks run in this order and the first failure rejects the move: moves allowed by the component, a component
+         * content that {@link GanttChartComponentState#initializeContent(JSONObject)} read without a recorded failure, a
+         * valid chart scale, a payload that passes {@link #parseMovePayload(String[])}, a component context within the bounds of
          * {@link GanttChartMoveRequest#isWithinContextBounds(JSONObject)}, a parseable {@code dateFrom}, a {@code dateFrom}
          * whose year lies between {@link GanttChartComponentState#MOVE_MIN_YEAR} and
          * {@link GanttChartComponentState#MOVE_MAX_YEAR}, a {@code dateFrom} that exists in the time zone, an item with the
@@ -586,6 +675,12 @@ public class GanttChartComponentState extends AbstractComponentState {
 
             if (!allowItemMove) {
                 rejectWith(null, L_MOVE_DISABLED);
+                return;
+            }
+            if (contentReadFailure != null) {
+                LOG.debug("Rejected the moveItem event of the Gantt chart: its component content could not be read ({})",
+                        contentReadFailure.getClass().getName());
+                rejectWith(null, L_INVALID_REQUEST);
                 return;
             }
             if (scale == null || globalErrorMessage != null) {

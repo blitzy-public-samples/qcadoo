@@ -44,7 +44,7 @@ import com.qcadoo.view.internal.api.InternalViewDefinition;
 
 /**
  * Tests of {@link GanttChartComponentState#getContextValue(String)} on a state initialized from a request that carries only
- * a component context, or no context at all.
+ * a component context, a component context next to a component content that cannot be read, or no context at all.
  */
 public class GanttChartComponentStateContextTest {
 
@@ -136,6 +136,32 @@ public class GanttChartComponentStateContextTest {
 
         // then
         assertNull(value);
+    }
+
+    /**
+     * A request whose component content holds header parameters with the scale {@code "X"}, which names no zoom level,
+     * initializes without throwing and keeps its component context {@code {"productionLineScheduleId":"12"}}.
+     */
+    @Test
+    public final void shouldReturnContextValueWhenComponentContentIsUnreadable() throws Exception {
+        // given
+        GanttChartComponentState state = createUninitializedState();
+
+        JSONObject headerParameters = new JSONObject();
+        headerParameters.put("scale", "X");
+        headerParameters.put("dateFrom", "2026-06-01");
+        headerParameters.put("dateTo", "2026-06-02");
+
+        JSONObject json = new JSONObject();
+        json.put("content", new JSONObject().put("headerParameters", headerParameters));
+        json.put("context", new JSONObject().put(CONTEXT_KEY, "12"));
+
+        // when
+        state.initialize(json, Locale.ENGLISH);
+        String value = state.getContextValue(CONTEXT_KEY);
+
+        // then
+        assertEquals("12", value);
     }
 
     /**

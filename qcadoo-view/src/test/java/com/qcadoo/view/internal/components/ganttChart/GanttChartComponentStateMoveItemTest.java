@@ -44,6 +44,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.util.ReflectionTestUtils.getField;
+import static org.springframework.test.util.ReflectionTestUtils.invokeMethod;
 import static org.springframework.test.util.ReflectionTestUtils.setField;
 
 import java.io.InputStream;
@@ -101,9 +102,10 @@ import com.qcadoo.view.internal.hooks.ViewEventListenerHook;
  * Tests of the {@code moveItem} event of {@link GanttChartComponentState}: its registration next to the existing events, the
  * framework checks of a drop and their rejection reasons, the mutation of the dropped item through
  * {@link GanttChartModifiableItem}, the {@link GanttChartMoveRequest} exposed to listeners, {@code acceptMove} and
- * {@code rejectMove}, the rendered {@code moveResult}, the move results rendered when the handler or a listener fails, and
- * the exceptions {@code acceptMove} and {@code render} throw when the refresh of an accepted move or its chart rendering
- * fails.
+ * {@code rejectMove}, the rendered {@code moveResult}, the move results rendered when the handler or a listener fails, the
+ * exceptions {@code acceptMove} and {@code render} throw when the refresh of an accepted move or its chart rendering fails,
+ * and a component content that cannot be read: the moveItem rejection it causes, and the exception refresh, initialize,
+ * select and {@code render} throw for it.
  * <p>
  * Every test runs with UTC as the default JVM and Joda-Time zone unless it switches to {@code Europe/Warsaw}; both defaults
  * are restored after each test.
@@ -2598,6 +2600,357 @@ public class GanttChartComponentStateMoveItemTest {
 
         assertNotNull(validState.getMoveRequest());
         assertEquals(TARGET_ROW, validState.getMoveRequest().getTargetRowName());
+    }
+
+    /**
+     * Creates a state of {@link #createUninitializedState(boolean)} and initializes it through
+     * {@link #initializeWithContent(GanttChartComponentState, JSONObject)} with the given component content.
+     */
+    private GanttChartComponentState createStateWithContent(final boolean allowItemMove, final JSONObject content)
+            throws Exception {
+        GanttChartComponentState state = createUninitializedState(allowItemMove);
+        initializeWithContent(state, content);
+        return state;
+    }
+
+    /**
+     * Initializes the state in {@link Locale#ENGLISH} from a request whose component content is the given object and whose
+     * component context is {@code {"productionLineScheduleId":"5"}}.
+     */
+    private void initializeWithContent(final GanttChartComponentState state, final JSONObject content) throws Exception {
+        JSONObject context = new JSONObject();
+        context.put(CONTEXT_SCHEDULE_ID, SCHEDULE_ID);
+
+        JSONObject json = new JSONObject();
+        json.put("content", content);
+        json.put("context", context);
+
+        state.initialize(json, Locale.ENGLISH);
+    }
+
+    /** Returns the header parameters of zoom level H1 for 2026-06-01 to 2026-06-02. */
+    private JSONObject readableHeaderParameters() throws JSONException {
+        JSONObject headerParameters = new JSONObject();
+        headerParameters.put("scale", "H1");
+        headerParameters.put("dateFrom", HEADER_DATE_FROM);
+        headerParameters.put("dateTo", HEADER_DATE_TO);
+        return headerParameters;
+    }
+
+    /** Returns a component content holding only {@link #readableHeaderParameters()}. */
+    private JSONObject readableContent() throws JSONException {
+        return new JSONObject().put("headerParameters", readableHeaderParameters());
+    }
+
+    /**
+     * Returns a component content holding {@link #readableHeaderParameters()} with {@code key} set to {@code value}, or
+     * without {@code key} for a null value.
+     */
+    private JSONObject contentWithHeaderValue(final String key, final Object value) throws JSONException {
+        JSONObject headerParameters = readableHeaderParameters();
+        if (value == null) {
+            headerParameters.remove(key);
+        } else {
+            headerParameters.put(key, value);
+        }
+        return new JSONObject().put("headerParameters", headerParameters);
+    }
+
+    /** Returns {@link #readableContent()} with {@code selectedEntityId} set to the given value. */
+    private JSONObject contentWithSelectedEntityId(final Object selectedEntityId) throws JSONException {
+        return readableContent().put("selectedEntityId", selectedEntityId);
+    }
+
+    /**
+     * Returns component contents that cannot be read, by case name: header parameters whose scale is {@code "X"}, empty,
+     * {@code "h1"}, JSON null, the number 1, an object, an array or 10000 characters; header parameters without scale,
+     * without dateFrom or without dateTo; a content without header parameters, or whose header parameters are JSON null, the
+     * text {@code "x"}, an array or the number 1; and readable header parameters next to a selected entity id that is the text
+     * {@code "abc"}, JSON null or true.
+     */
+    private Map<String, JSONObject> unreadableContents() throws JSONException {
+        Map<String, JSONObject> contentByCase = new LinkedHashMap<String, JSONObject>();
+        contentByCase.put("scale X", contentWithHeaderValue("scale", "X"));
+        contentByCase.put("empty scale", contentWithHeaderValue("scale", ""));
+        contentByCase.put("lower-case scale h1", contentWithHeaderValue("scale", "h1"));
+        contentByCase.put("JSON null scale", contentWithHeaderValue("scale", JSONObject.NULL));
+        contentByCase.put("numeric scale", contentWithHeaderValue("scale", Integer.valueOf(1)));
+        contentByCase.put("object scale", contentWithHeaderValue("scale", new JSONObject()));
+        contentByCase.put("array scale", contentWithHeaderValue("scale", new JSONArray()));
+        contentByCase.put("scale of 10000 characters", contentWithHeaderValue("scale", StringUtils.repeat('X', 10000)));
+        contentByCase.put("missing scale", contentWithHeaderValue("scale", null));
+        contentByCase.put("missing dateFrom", contentWithHeaderValue("dateFrom", null));
+        contentByCase.put("missing dateTo", contentWithHeaderValue("dateTo", null));
+        contentByCase.put("missing headerParameters", new JSONObject());
+        contentByCase.put("JSON null headerParameters", new JSONObject().put("headerParameters", JSONObject.NULL));
+        contentByCase.put("text headerParameters", new JSONObject().put("headerParameters", "x"));
+        contentByCase.put("array headerParameters", new JSONObject().put("headerParameters", new JSONArray()));
+        contentByCase.put("numeric headerParameters", new JSONObject().put("headerParameters", Integer.valueOf(1)));
+        contentByCase.put("text selectedEntityId", contentWithSelectedEntityId("abc"));
+        contentByCase.put("JSON null selectedEntityId", contentWithSelectedEntityId(JSONObject.NULL));
+        contentByCase.put("boolean selectedEntityId", contentWithSelectedEntityId(Boolean.TRUE));
+        return contentByCase;
+    }
+
+    /** Returns the exception recorded while the state read its component content, or null when none is recorded. */
+    private Exception recordedContentReadFailure(final GanttChartComponentState state) {
+        return (Exception) getField(state, "contentReadFailure");
+    }
+
+    /** Returns whether {@code expected} is {@code thrown} itself or one of the causes in its cause chain. */
+    private boolean causeChainHolds(final Throwable thrown, final Throwable expected) {
+        for (Throwable cause = thrown; cause != null; cause = cause.getCause()) {
+            if (cause == expected) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Renders the state and returns the exception render throws, or null when render returns. */
+    private Exception renderFailure(final GanttChartComponentState state) {
+        try {
+            state.render();
+        } catch (JSONException e) {
+            return e;
+        } catch (RuntimeException e) {
+            return e;
+        }
+        return null;
+    }
+
+    /**
+     * Each content of {@link #unreadableContents()} initializes a move-enabled state without throwing and is recorded as
+     * a failure to read it. A valid drop on each state is rejected as an invalid request with a null item id: the content is
+     * only that moveResult, carrying neither the text of the recorded exception nor a component message, and no move
+     * request is exposed. The resolver never runs.
+     */
+    @Test
+    public final void shouldRejectMoveAsInvalidRequestWhenComponentContentIsUnreadable() throws Exception {
+        // given
+        stubResolverForDay(2026, 6, 1);
+        Map<String, GanttChartComponentState> stateByCase = new LinkedHashMap<String, GanttChartComponentState>();
+        for (Map.Entry<String, JSONObject> contentCase : unreadableContents().entrySet()) {
+            stateByCase.put(contentCase.getKey(), createStateWithContent(true, contentCase.getValue()));
+        }
+
+        // when
+        for (GanttChartComponentState state : stateByCase.values()) {
+            move(state, validPayload());
+        }
+
+        // then
+        assertEquals(19, stateByCase.size());
+        for (Map.Entry<String, GanttChartComponentState> stateCase : stateByCase.entrySet()) {
+            String caseName = stateCase.getKey();
+            GanttChartComponentState state = stateCase.getValue();
+            Exception recorded = recordedContentReadFailure(state);
+            assertNotNull(caseName, recorded);
+
+            JSONObject rendered = state.render();
+            JSONObject content = rendered.getJSONObject("content");
+            assertEquals(caseName, Collections.singleton(MOVE_RESULT), keySet(content));
+            JSONObject result = content.getJSONObject(MOVE_RESULT);
+            assertEquals(caseName, new HashSet<String>(Arrays.asList(ITEM_ID, ACCEPTED, MESSAGE)), keySet(result));
+            assertFalse(caseName, result.getBoolean(ACCEPTED));
+            assertTrue(caseName, result.isNull(ITEM_ID));
+            assertEquals(caseName, MOVE_ERROR_FALLBACK_PREFIX + INVALID_REQUEST, result.getString(MESSAGE));
+            assertNull(caseName, state.getMoveRequest());
+            assertFalse(caseName, rendered.toString().contains(recorded.getMessage()));
+            assertNoMessages(rendered);
+            assertFalse(caseName, state.isHasError());
+        }
+        verify(resolver, never()).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+    }
+
+    /**
+     * On a board whose pattern does not allow item moves, a valid drop on a state whose content cannot be read, the scale
+     * {@code "X"} or no header parameters, is rejected as disabled with a null item id, without resolving items.
+     */
+    @Test
+    public final void shouldRejectMoveAsDisabledWhenComponentContentIsUnreadableAndItemMoveNotAllowed() throws Exception {
+        // given
+        stubResolverForDay(2026, 6, 1);
+        GanttChartComponentState illegalScaleState = createStateWithContent(false, contentWithHeaderValue("scale", "X"));
+        GanttChartComponentState missingHeaderState = createStateWithContent(false, new JSONObject());
+
+        // when
+        move(illegalScaleState, validPayload());
+        move(missingHeaderState, validPayload());
+
+        // then
+        assertRejectedBy("scale X", illegalScaleState, MOVE_DISABLED);
+        assertTrue(moveResult(illegalScaleState).isNull(ITEM_ID));
+        assertRejectedBy("missing headerParameters", missingHeaderState, MOVE_DISABLED);
+        assertTrue(moveResult(missingHeaderState).isNull(ITEM_ID));
+        verify(resolver, never()).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+    }
+
+    /**
+     * refresh, initialize and select each fail from performEvent on a state whose content cannot be read: header
+     * parameters with the scale {@code "X"} (an {@link IllegalArgumentException}), no header parameters (a
+     * {@link JSONException}), and readable header parameters next to the selected entity id {@code "abc"} (a
+     * {@link JSONException}). The cause chain of each thrown exception holds the exception recorded while the content was
+     * read. The resolver never runs and the registered field listener is never notified.
+     */
+    @Test
+    public final void shouldFailRefreshInitializeAndSelectWithRecordedContentReadFailure() throws Exception {
+        // given
+        stubResolverForDay(2026, 6, 1);
+        Map<String, JSONObject> contentByCase = new LinkedHashMap<String, JSONObject>();
+        contentByCase.put("scale X", contentWithHeaderValue("scale", "X"));
+        contentByCase.put("missing headerParameters", new JSONObject());
+        contentByCase.put("text selectedEntityId", contentWithSelectedEntityId("abc"));
+        Map<String, Class<?>> recordedTypeByCase = new LinkedHashMap<String, Class<?>>();
+        recordedTypeByCase.put("scale X", IllegalArgumentException.class);
+        recordedTypeByCase.put("missing headerParameters", JSONException.class);
+        recordedTypeByCase.put("text selectedEntityId", JSONException.class);
+        FieldEntityIdChangeListener selectListener = mock(FieldEntityIdChangeListener.class);
+
+        Map<String, GanttChartComponentState> stateByCase = new LinkedHashMap<String, GanttChartComponentState>();
+        for (Map.Entry<String, JSONObject> contentCase : contentByCase.entrySet()) {
+            for (String event : Arrays.asList(REFRESH, INITIALIZE, SELECT)) {
+                GanttChartComponentState state = createStateWithContent(true, contentCase.getValue());
+                state.addFieldEntityIdChangeListener("selectListener", selectListener);
+                stateByCase.put(contentCase.getKey() + " / " + event, state);
+            }
+        }
+
+        // when
+        Map<String, RuntimeException> thrownByCase = new LinkedHashMap<String, RuntimeException>();
+        for (Map.Entry<String, GanttChartComponentState> stateCase : stateByCase.entrySet()) {
+            String event = stateCase.getKey().substring(stateCase.getKey().indexOf(" / ") + 3);
+            try {
+                perform(stateCase.getValue(), event);
+            } catch (RuntimeException e) {
+                thrownByCase.put(stateCase.getKey(), e);
+            }
+        }
+
+        // then
+        assertEquals(9, stateByCase.size());
+        for (Map.Entry<String, GanttChartComponentState> stateCase : stateByCase.entrySet()) {
+            String caseName = stateCase.getKey();
+            Exception recorded = recordedContentReadFailure(stateCase.getValue());
+            Class<?> recordedType = recordedTypeByCase.get(caseName.substring(0, caseName.indexOf(" / ")));
+            assertTrue(caseName, recordedType.isInstance(recorded));
+            assertNotNull(caseName, thrownByCase.get(caseName));
+            assertTrue(caseName, causeChainHolds(thrownByCase.get(caseName), recorded));
+            assertNull(caseName, stateCase.getValue().getMoveRequest());
+        }
+        verify(resolver, never()).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+        verify(selectListener, never()).onFieldEntityIdChange(Matchers.<Long> any());
+    }
+
+    /**
+     * A state whose content cannot be read, the scale {@code "X"} or no header parameters, renders nothing when its render
+     * is requested without a move: render throws the recorded exception itself, the {@link IllegalArgumentException} and the
+     * {@link JSONException}.
+     */
+    @Test
+    public final void shouldThrowRecordedContentReadFailureWhenRenderIsRequestedWithoutMove() throws Exception {
+        // given
+        GanttChartComponentState illegalScaleState = createStateWithContent(true, contentWithHeaderValue("scale", "X"));
+        GanttChartComponentState missingHeaderState = createStateWithContent(true, new JSONObject());
+        invokeMethod(illegalScaleState, "requestRender");
+        invokeMethod(missingHeaderState, "requestRender");
+
+        // when
+        Exception illegalScaleFailure = renderFailure(illegalScaleState);
+        Exception missingHeaderFailure = renderFailure(missingHeaderState);
+
+        // then
+        assertTrue(illegalScaleFailure instanceof IllegalArgumentException);
+        assertSame(recordedContentReadFailure(illegalScaleState), illegalScaleFailure);
+        assertTrue(missingHeaderFailure instanceof JSONException);
+        assertSame(recordedContentReadFailure(missingHeaderState), missingHeaderFailure);
+    }
+
+    /**
+     * A state initialized again with readable content after content that cannot be read, the scale {@code "X"} or no header
+     * parameters, holds no recorded failure: a valid drop builds a move request for row {@code L2}, its result stays not
+     * handled for item 7, and the resolver runs once per drop.
+     */
+    @Test
+    public final void shouldMoveNormallyWhenReinitializedWithReadableContent() throws Exception {
+        // given
+        stubResolverForDay(2026, 6, 1);
+        GanttChartComponentState illegalScaleState = createStateWithContent(true, contentWithHeaderValue("scale", "X"));
+        GanttChartComponentState missingHeaderState = createStateWithContent(true, new JSONObject());
+        assertNotNull(recordedContentReadFailure(illegalScaleState));
+        assertNotNull(recordedContentReadFailure(missingHeaderState));
+        initializeWithContent(illegalScaleState, readableContent());
+        initializeWithContent(missingHeaderState, readableContent());
+
+        // when
+        move(illegalScaleState, validPayload());
+        move(missingHeaderState, validPayload());
+
+        // then
+        for (GanttChartComponentState state : Arrays.asList(illegalScaleState, missingHeaderState)) {
+            assertNull(recordedContentReadFailure(state));
+            JSONObject result = moveResult(state);
+            assertFalse(result.getBoolean(ACCEPTED));
+            assertEquals(7L, result.getLong(ITEM_ID));
+            assertEquals(MOVE_ERROR_FALLBACK_PREFIX + NOT_HANDLED, result.getString(MESSAGE));
+            assertNotNull(state.getMoveRequest());
+            assertEquals(TARGET_ROW, state.getMoveRequest().getTargetRowName());
+        }
+        verify(resolver, times(2)).resolve(any(GanttChartScale.class), any(JSONObject.class), any(Locale.class));
+    }
+
+    /**
+     * Header dates that are empty or not dates, and a header range longer than the one month of zoom level H1, are read
+     * without a recorded failure. After refresh each header date that is empty or not a date renders the fallback key of
+     * the empty-date or invalid-date message in place of the date, and a board with an erroneous dateFrom renders its rows;
+     * the too-large range renders the too-large-range global message and no rows. A header without a usable dateTo ends
+     * on a default date relative to today, so no assertion depends on whether that range also has a global message.
+     */
+    @Test
+    public final void shouldRenderHeaderDateErrorsWithoutRecordingContentReadFailure() throws Exception {
+        // given
+        stubResolverForDay(2026, 6, 1);
+        GanttChartComponentState emptyDateFromState = createStateWithContent(true, contentWithHeaderValue("dateFrom", ""));
+        GanttChartComponentState invalidDateFromState = createStateWithContent(true,
+                contentWithHeaderValue("dateFrom", "not a date"));
+        GanttChartComponentState emptyDateToState = createStateWithContent(true, contentWithHeaderValue("dateTo", ""));
+        GanttChartComponentState invalidDateToState = createStateWithContent(true,
+                contentWithHeaderValue("dateTo", "not a date"));
+        GanttChartComponentState tooLargeRangeState = createStateWithContent(true,
+                contentWithHeaderValue("dateTo", "2026-08-01"));
+        List<GanttChartComponentState> states = Arrays.asList(emptyDateFromState, invalidDateFromState, emptyDateToState,
+                invalidDateToState, tooLargeRangeState);
+
+        // when
+        for (GanttChartComponentState state : states) {
+            perform(state, REFRESH);
+        }
+
+        // then
+        for (GanttChartComponentState state : states) {
+            assertNull(recordedContentReadFailure(state));
+        }
+        JSONObject emptyDateFromContent = content(emptyDateFromState);
+        assertEquals("qcadooView.gantt.errorMessage.emptyDate", emptyDateFromContent.getString("dateFromErrorMessage"));
+        assertFalse(emptyDateFromContent.has("dateFrom"));
+        assertEquals(2, emptyDateFromContent.getJSONArray("rows").length());
+
+        JSONObject invalidDateFromContent = content(invalidDateFromState);
+        assertEquals("qcadooView.gantt.errorMessage.dateNotValid", invalidDateFromContent.getString("dateFromErrorMessage"));
+        assertFalse(invalidDateFromContent.has("dateFrom"));
+        assertEquals(2, invalidDateFromContent.getJSONArray("rows").length());
+
+        JSONObject emptyDateToContent = content(emptyDateToState);
+        assertEquals("qcadooView.gantt.errorMessage.emptyDate", emptyDateToContent.getString("dateToErrorMessage"));
+        assertFalse(emptyDateToContent.has("dateTo"));
+
+        JSONObject invalidDateToContent = content(invalidDateToState);
+        assertEquals("qcadooView.gantt.errorMessage.dateNotValid", invalidDateToContent.getString("dateToErrorMessage"));
+        assertFalse(invalidDateToContent.has("dateTo"));
+
+        JSONObject tooLargeRangeContent = content(tooLargeRangeState);
+        assertEquals("qcadooView.gantt.errorMessage.tooLargeRange", tooLargeRangeContent.getString("globalErrorMessage"));
+        assertFalse(tooLargeRangeContent.has("rows"));
     }
 
 }
