@@ -280,16 +280,19 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         if (value.moveResult) {
             var outcome = moveTransform.resolveMoveOutcome(value.moveResult);
             if (outcome.snapBack) {
-                // Rejected move: restores the dropped item and shows the reason next to it.
+                // Rejected move: restores the dropped item, reveals it in the pane and shows the reason next to its visible part.
                 var movedItemElement = pendingMove ? pendingMove.element : $("#" + _this.elementSearchName + "_item_" + value.moveResult.itemId);
                 if (pendingMove) {
                     restoreItemPosition(pendingMove);
+                }
+                if (movedItemElement.length > 0) {
+                    revealItemInRowsPane(movedItemElement[0]);
                 }
                 rejectionState = createRejectionState(movedItemElement);
                 ganttTooltip.hide();
                 var rejectionBody = "<div class='ganttItemDescriptionName'>" + (_this.options.translations["move.rejectedHeader"] || "") + "</div>"
                     + "<div class='ganttItemDescriptionInfo'>" + (outcome.message || "") + "</div>";
-                var anchorRect = (movedItemElement.length > 0 ? movedItemElement[0] : element[0]).getBoundingClientRect();
+                var anchorRect = movedItemElement.length > 0 ? readVisibleItemRect(movedItemElement[0]) : element[0].getBoundingClientRect();
                 ganttTooltip.setBody(rejectionBody, "alert");
                 ganttTooltip.showFor(rejectionState, (anchorRect.left + anchorRect.right) / 2, anchorRect.bottom,
                     rejectionBody, movedItemElement.length > 0 ? anchorRect : undefined);
@@ -458,6 +461,54 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
             originX: null,
             originY: null
         };
+    }
+
+    /** Returns the intersection of two viewport rectangles, or null when they share no area. */
+    function intersectRects(first, second) {
+        var left = Math.max(first.left, second.left),
+            top = Math.max(first.top, second.top),
+            right = Math.min(first.right, second.right),
+            bottom = Math.min(first.bottom, second.bottom);
+        if (!(right > left) || !(bottom > top)) {
+            return null;
+        }
+        return {
+            left: left,
+            top: top,
+            right: right,
+            bottom: bottom
+        };
+    }
+
+    /** Returns the rounded scroll offset that centres a span in the visible span, or the offset when the span fits in it. */
+    function getCentringScrollOffset(scrollOffset, start, end, visibleStart, visibleEnd) {
+        if (start >= visibleStart && end <= visibleEnd) {
+            return scrollOffset;
+        }
+        return Math.round(scrollOffset + (start + end) / 2 - (visibleStart + visibleEnd) / 2);
+    }
+
+    /** Scrolls only the rows pane to centre an item of the rows container on each axis it does not fit, when none of it is visible. */
+    function revealItemInRowsPane(itemNode) {
+        var wrapper = htmlElements.rowsContainerWrapper,
+            visibleRect,
+            itemRect;
+        if (!$.contains(htmlElements.rowsContainer[0], itemNode)) {
+            return;
+        }
+        visibleRect = readVisiblePaneRect();
+        itemRect = itemNode.getBoundingClientRect();
+        if (intersectRects(itemRect, visibleRect) !== null) {
+            return;
+        }
+        wrapper.scrollLeft(getCentringScrollOffset(wrapper.scrollLeft(), itemRect.left, itemRect.right, visibleRect.left, visibleRect.right));
+        wrapper.scrollTop(getCentringScrollOffset(wrapper.scrollTop(), itemRect.top, itemRect.bottom, visibleRect.top, visibleRect.bottom));
+    }
+
+    /** Returns an item's viewport rectangle cut to the visible rows pane, or the whole rectangle when none of it is visible. */
+    function readVisibleItemRect(itemNode) {
+        var itemRect = itemNode.getBoundingClientRect();
+        return intersectRects(itemRect, readVisiblePaneRect()) || itemRect;
     }
 
     /** Clears the rejection, hides its tooltip and empties the alert region. */
@@ -1472,19 +1523,24 @@ QCD.components.elements.GanttChart = function (_element, _mainController) {
         updateDragTarget(oe);
     }
 
+    /** Returns the viewport rectangle of the rows pane's client area, scroll bars excluded. */
+    function readVisiblePaneRect() {
+        var wrapperElement = htmlElements.rowsContainerWrapper[0],
+            wrapperRect = wrapperElement.getBoundingClientRect();
+        return {
+            left: wrapperRect.left,
+            top: wrapperRect.top,
+            right: wrapperRect.left + wrapperElement.clientWidth,
+            bottom: wrapperRect.top + wrapperElement.clientHeight
+        };
+    }
+
     /** Returns the rows content, visible pane and cell rectangles of the drop area. */
     function readDropArea() {
-        var wrapperElement = htmlElements.rowsContainerWrapper[0],
-            wrapperRect = wrapperElement.getBoundingClientRect(),
-            rowsRect = htmlElements.rowsContainer[0].getBoundingClientRect();
+        var rowsRect = htmlElements.rowsContainer[0].getBoundingClientRect();
         return {
             rowsRect: rowsRect,
-            visibleRect: {
-                left: wrapperRect.left,
-                top: wrapperRect.top,
-                right: wrapperRect.left + wrapperElement.clientWidth,
-                bottom: wrapperRect.top + wrapperElement.clientHeight
-            },
+            visibleRect: readVisiblePaneRect(),
             contentRect: {
                 left: rowsRect.left,
                 top: rowsRect.top,
@@ -1998,6 +2054,12 @@ QCD.components.elements.GanttChartTooltip = function (_element) {
 
         if (calcY + tooltipHeight > windowHeight - spacing.bottom) {
             calcY = (anchor ? anchor.top : y) - tooltipHeight - 20;
+        }
+
+        // With the move layout both axes stay inside the margins; the top and left margins hold on a tooltip too large.
+        if (moveLayout) {
+            calcX = Math.max(calcX, spacing.left);
+            calcY = Math.max(Math.min(calcY, windowHeight - spacing.bottom - tooltipHeight), spacing.top);
         }
 
         return {

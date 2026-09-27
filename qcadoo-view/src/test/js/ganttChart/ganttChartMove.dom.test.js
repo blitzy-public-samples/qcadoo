@@ -242,7 +242,12 @@ const EXPECTED_CASE_NAMES = Object.freeze([
     'rejection alert region: it holds the rejection until a dismissal or the next sent move, and an accepted pointer or '
         + 'keyboard move leaves it empty with the saved move announced',
     'a board without moves keeps its hover tooltip: it follows the pointer, keeps a visible body and hides on '
-        + "mouseleave, while a move-enabled board shows the hovered item's own body"
+        + "mouseleave, while a move-enabled board shows the hovered item's own body",
+    'on a move-enabled board a drag pointer held above, below or left of the window keeps the release-to-cancel '
+        + 'tooltip inside the window margins, and a release above the window sends nothing and restores the bar',
+    'a rejection of a bar whose place left the visible pane during the drag scrolls only the rows pane to centre the '
+        + 'bar, with the header and row names in sync, and shows the reason below it clear of the row names; a visible '
+        + 'or partly visible bar keeps the scroll, and the reason centres on its visible part'
 ]);
 
 // Absolute path and file:// URL of the DOM fixture.
@@ -4813,6 +4818,180 @@ const CASES = [
             assert.equal(replaced.visible, true);
             assert.ok(replaced.text.includes('ORD-7') && !replaced.text.includes('PE-1'),
                 'body after a mousemove of bar 7 on the move-enabled board: ' + replaced.text);
+            await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'on a move-enabled board a drag pointer held above, below or left of the window keeps the '
+            + 'release-to-cancel tooltip inside the window margins, and a release above the window sends nothing and '
+            + 'restores the bar',
+        run: async () => {
+            const tolerance = 0.01;
+            await openBoard('h1', A11Y_OVERRIDES);
+            const size = await windowSize();
+            const preDrag = await barStyle(7);
+            const rect = await barRect(7);
+            // Captured pointer positions outside the window: 40 px above it, 132 px below it and 60 px left of it.
+            const outsidePoints = [
+                { label: 'above the window', x: rect.x, y: -40 },
+                { label: 'below the window', x: rect.x, y: size.innerHeight + 132 },
+                { label: 'left of the window', x: -60, y: rect.y }
+            ];
+            // Asserts that the tooltip holds exactly the release-to-cancel text and lies inside the 20 px top, bottom
+            // and left margins and the 40 px right margin of the window, and that the dragged bar waits at its pre-drag
+            // place.
+            const assertInsideMargins = async (label) => {
+                const tooltip = await waitForVisibleTooltip();
+                assert.equal(tooltip.text, RELEASE_TO_CANCEL_TEXT, label + ' tooltip');
+                const box = await elementRect(TOOLTIP_EXPR);
+                assert.ok(box.top >= 20 - tolerance && box.bottom <= size.innerHeight - 20 + tolerance
+                    && box.left >= 20 - tolerance && box.right <= size.innerWidth - 40 + tolerance,
+                    label + ': tooltip ' + JSON.stringify(box) + ', window ' + JSON.stringify(size));
+                const style = await barStyle(7);
+                assert.equal(style.left, preDrag.left, label + ' left');
+                assert.equal(style.top, preDrag.top, label + ' top');
+                assert.ok(style.classes.includes('ganttItemDragging'), label + ' classes: ' + style.classes.join(' '));
+            };
+
+            await press(rect.x, rect.y);
+            await move(rect.x + 6, rect.y);
+            for (const point of outsidePoints) {
+                await move(point.x, point.y);
+                await assertInsideMargins(point.label);
+            }
+            const releasePoint = outsidePoints[0];
+            await move(releasePoint.x, releasePoint.y);
+            await assertInsideMargins('release point ' + releasePoint.label);
+            await release(releasePoint.x, releasePoint.y);
+            assertRestored(await barStyle(7), preDrag);
+            assert.equal((await tooltipState()).visible, false, 'tooltip after the release above the window');
+            assert.equal(await elementText(STATUS_REGION_EXPR), MOVE_A11Y_TRANSLATIONS['move.cancelledAnnouncement'],
+                'status after the release above the window');
+            await afterDrop(0);
+            assertRestored(await barStyle(7), preDrag);
+            assert.deepEqual(await eventNames(), ['refresh']);
+            await assertNoPageErrors();
+        }
+    },
+    {
+        name: 'a rejection of a bar whose place left the visible pane during the drag scrolls only the rows pane to '
+            + 'centre the bar, with the header and row names in sync, and shows the reason below it clear of the row '
+            + 'names; a visible or partly visible bar keeps the scroll, and the reason centres on its visible part',
+        run: async () => {
+            const reason = 'Outside working hours';
+            const namesExpr = "document.querySelector('.ganttRowNamesWrapper')";
+            // Waits for the rejection of the next moveItem with the reason, asserts that bar 21 is back at its pre-drag
+            // place, that the tooltip shows the reason and that the alert region holds it, waits for the chart to
+            // unblock, and returns the viewport rectangles of the bar, the tooltip and the visible pane.
+            const awaitRejection = async (expectedMoveCount, preDrag, label) => {
+                const calls = await afterDrop(expectedMoveCount);
+                assertRestored(await barStyle(21), preDrag);
+                const rejection = await waitForVisibleTooltip();
+                assert.ok(rejection.text.includes('Move rejected') && rejection.text.includes(reason),
+                    label + ' tooltip text: ' + rejection.text);
+                assert.ok((await elementText(ALERT_REGION_EXPR)).includes(reason), label + ' alert region');
+                await waitFor(IS_UNBLOCKED_EXPR);
+                return {
+                    calls,
+                    bar: await barRect(21),
+                    tooltip: await elementRect(TOOLTIP_EXPR),
+                    pane: await wrapperRect()
+                };
+            };
+            // Asserts that the tooltip top lies 20 px below the bottom of a rectangle and that its centre lies at a
+            // horizontal position, both within 1 px.
+            const assertBelow = (placed, anchor, centreX, label) => {
+                assert.ok(Math.abs(placed.tooltip.top - (anchor.bottom + 20)) <= 1,
+                    label + ': tooltip top ' + placed.tooltip.top + ', anchor bottom ' + anchor.bottom);
+                assert.ok(Math.abs(placed.tooltip.x - centreX) <= 1,
+                    label + ': tooltip centre ' + placed.tooltip.x + ', expected ' + centreX);
+            };
+
+            await openBoard('scrolled');
+
+            // A visible bar: the rejection keeps the pane scroll.
+            await scrollPane(700, 270);
+            await settle();
+            await setNextMoveResponse({ kind: 'rejected', message: reason });
+            const preDrag = await barStyle(21);
+            let rect = await barRect(21);
+            await hover(rect.x, rect.y);
+            await drag(rect, horizontalSteps(10, 40));
+            const visible = await awaitRejection(1, preDrag, 'visible bar');
+            assertRectInside(visible.bar, visible.pane, 'visible bar inside the pane');
+            await settle();
+            assert.deepEqual(await paneScroll(), { left: 700, top: 270, headerLeft: 700, namesTop: 270 });
+            assertBelow(visible, visible.bar, visible.bar.x, 'visible bar');
+
+            // A partly visible bar, cut by the left edge of the pane: the rejection keeps the pane scroll and centres
+            // the reason on the visible part of the bar.
+            await scrollPane(860, 270);
+            await settle();
+            await setNextMoveResponse({ kind: 'rejected', message: reason });
+            rect = await barRect(21);
+            let pane = await wrapperRect();
+            assert.ok(rect.left < pane.left - 5 && rect.right > pane.left + 10,
+                'bar ' + JSON.stringify(rect) + ' cut by the pane ' + JSON.stringify(pane));
+            const grab = { x: pane.left + 7, y: rect.y };
+            await hover(grab.x, grab.y);
+            await drag(grab, horizontalSteps(10, 40));
+            const partly = await awaitRejection(2, preDrag, 'partly visible bar');
+            await settle();
+            assert.deepEqual(await paneScroll(), { left: 860, top: 270, headerLeft: 860, namesTop: 270 });
+            const visiblePart = { left: partly.pane.left, right: partly.bar.right, bottom: partly.bar.bottom };
+            assert.ok(partly.tooltip.left > 20.01, 'unclamped tooltip: ' + JSON.stringify(partly.tooltip));
+            assertBelow(partly, visiblePart, (visiblePart.left + visiblePart.right) / 2, 'partly visible bar');
+
+            // A bar whose place leaves the visible pane on both axes while wheel turns scroll the pane during the drag.
+            await scrollPane(700, 270);
+            await settle();
+            await setNextMoveResponse({ kind: 'rejected', message: reason });
+            rect = await barRect(21);
+            const pointer = { x: rect.x + 2 * GRID_STEP_H1_PX, y: rect.y };
+            await hover(rect.x, rect.y);
+            await press(rect.x, rect.y);
+            await move(rect.x + 5, rect.y);
+            await move(pointer.x, pointer.y);
+            await wheelWithButtonHeld(pointer.x, pointer.y, 300, 0);
+            await waitFor('document.querySelector(".rowsContainerWrapper").scrollLeft === 1000');
+            await wheelWithButtonHeld(pointer.x, pointer.y, 0, 4 * ROW_HEIGHT_PX);
+            await waitFor('document.querySelector(".rowsContainerWrapper").scrollTop === 390');
+            await settle();
+            pane = await wrapperRect();
+            const preDragPlace = {
+                left: rect.left - 300,
+                top: rect.top - 4 * ROW_HEIGHT_PX,
+                right: rect.right - 300,
+                bottom: rect.bottom - 4 * ROW_HEIGHT_PX
+            };
+            assert.ok(preDragPlace.right <= pane.left && preDragPlace.bottom <= pane.top,
+                'pre-drag place ' + JSON.stringify(preDragPlace) + ' outside the pane ' + JSON.stringify(pane));
+            await release(pointer.x, pointer.y);
+            const revealed = await awaitRejection(3, preDrag, 'bar outside the pane');
+            assert.equal(revealed.calls[2].payload.row, 'L16');
+            assert.equal(revealed.calls[2].payload.dateFrom, '2026-06-02 23:00:00');
+            assertRectInside(revealed.bar, revealed.pane, 'revealed bar inside the pane');
+            assert.ok(Math.abs(revealed.bar.x - (revealed.pane.left + revealed.pane.right) / 2) <= 1
+                && Math.abs(revealed.bar.y - (revealed.pane.top + revealed.pane.bottom) / 2) <= 1,
+                'bar ' + JSON.stringify(revealed.bar) + ' centred in the pane ' + JSON.stringify(revealed.pane));
+            await settle();
+            const scroll = await paneScroll();
+            assert.equal(scroll.headerLeft, scroll.left, 'header scroll: ' + JSON.stringify(scroll));
+            assert.equal(scroll.namesTop, scroll.top, 'row names scroll: ' + JSON.stringify(scroll));
+            assert.deepEqual(await evaluate('[window.scrollX, window.scrollY]'), [0, 0]);
+            assertBelow(revealed, revealed.bar, revealed.bar.x, 'revealed bar');
+            const names = await elementRect(namesExpr);
+            assert.equal(rectsOverlap(revealed.tooltip, names), false,
+                'tooltip ' + JSON.stringify(revealed.tooltip) + ', row names ' + JSON.stringify(names));
+
+            // The scroll of the reveal does not dismiss the rejection.
+            await sleep(100);
+            await settle();
+            const kept = await tooltipState();
+            assert.equal(kept.visible, true, 'rejection tooltip after the reveal scroll');
+            assert.ok(kept.text.includes(reason), 'tooltip text after the reveal scroll: ' + kept.text);
+            assert.ok((await elementText(ALERT_REGION_EXPR)).includes(reason), 'alert region after the reveal scroll');
+            assert.deepEqual(await elementRect(TOOLTIP_EXPR), revealed.tooltip);
             await assertNoPageErrors();
         }
     }
