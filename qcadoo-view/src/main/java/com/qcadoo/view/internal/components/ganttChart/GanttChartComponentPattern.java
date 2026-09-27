@@ -43,6 +43,9 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
 
     private static final String JSP_PATH = "elements/ganttChart.jsp";
 
+    /** Grid step, in minutes, that moved Gantt item start dates snap to. */
+    public static final int MOVE_GRID_MINUTES = 30;
+
     private String resolver;
 
     private GanttChartItemStrip.Orientation stripOrientation;
@@ -52,6 +55,9 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
     private int defaultEndDay = 21;
 
     private boolean allowDateSelection = true;
+
+    /** Value of the {@code allowItemMove} view option: whether items may be moved with the {@code moveItem} event. */
+    private boolean allowItemMove = false;
 
     private boolean hasPopupInfo = true;
 
@@ -100,11 +106,34 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
                 itemsBorderWidth = Integer.valueOf(option.getValue());
             } else if ("itemsBorderColor".equals(option.getType())) {
                 itemsBorderColor = option.getValue();
+            } else if ("allowItemMove".equals(option.getType())) {
+                allowItemMove = parseAllowItemMove(option.getValue());
             }
         }
         if (resolver == null) {
             throw new IllegalStateException("Gantt must contain 'resolver' option");
         }
+    }
+
+    /**
+     * Parses the value of the {@code allowItemMove} view option. {@code "true"} and {@code "false"} are accepted in any letter
+     * case and give the corresponding flag.
+     *
+     * @param value
+     *            the option's value, {@code null} when the option carries no value
+     * @return the parsed flag
+     * @throws IllegalStateException
+     *             if the value is {@code null}, blank or any string other than {@code "true"} or {@code "false"}; the message
+     *             names the option and the value
+     */
+    private static boolean parseAllowItemMove(final String value) {
+        if ("true".equalsIgnoreCase(value)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(value)) {
+            return false;
+        }
+        throw new IllegalStateException("Gantt option 'allowItemMove' must be 'true' or 'false', but was '" + value + "'");
     }
 
     @Override
@@ -124,12 +153,25 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
         addTranslation(translations, "colisionElementName", locale);
         addTranslation(translations, "colisionBox.header", locale);
         addTranslation(translations, "colisionBox.closeButton", locale);
+        addTranslation(translations, "move.rejectedHeader", locale);
+        addTranslation(translations, "move.keyboardHelp", locale);
+        addTranslation(translations, "move.acceptedAnnouncement", locale);
+        addTranslation(translations, "move.cancelledAnnouncement", locale);
+        addTranslation(translations, "move.releaseToCancel", locale);
 
         JSONObject json = super.getJsOptions(locale);
         json.put("translations", translations);
 
         json.put("hasPopupInfo", hasPopupInfo);
         json.put("allowDateSelection", allowDateSelection);
+        json.put("allowItemMove", allowItemMove);
+        json.put("moveGridMinutes", MOVE_GRID_MINUTES);
+
+        JSONObject zoomHoursIntervals = new JSONObject();
+        for (ZoomLevel zoomLevel : ZoomLevel.values()) {
+            zoomHoursIntervals.put(zoomLevel.toString(), zoomLevel.getHoursInterval());
+        }
+        json.put("zoomHoursIntervals", zoomHoursIntervals);
 
         return json;
     }
@@ -168,6 +210,16 @@ public class GanttChartComponentPattern extends AbstractComponentPattern {
 
     public final Orientation getStripOrientation() {
         return stripOrientation;
+    }
+
+    /**
+     * Returns whether Gantt items of this component may be moved with the moveItem event.
+     *
+     * @return {@code true} when the view sets the {@code allowItemMove} option to {@code true} in any letter case, and
+     *         {@code false} when it sets the option to {@code false} in any letter case or does not set it
+     */
+    public final boolean isAllowItemMove() {
+        return allowItemMove;
     }
 
     public int getItemsBorderWidth() {

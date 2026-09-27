@@ -1,0 +1,393 @@
+{
+  "description": "Forward cell positions computed by GanttChartItemFactory for each ZoomLevel, read by GanttChartMoveTransformFixtureTest and ganttChartMoveTransform.test.js.",
+  "fixtures": [
+    {
+      "name": "H1-UTC",
+      "zoomLevel": "H1",
+      "hoursInterval": 1,
+      "cellWidth": 25,
+      "gridMinutes": 30,
+      "stepMinutes": 30,
+      "quantumMinutes": 6,
+      "timeZone": "UTC",
+      "dstTransition": null,
+      "scaleDateFrom": "2026-06-01 00:00:00",
+      "scaleDateTo": "2026-06-05 00:00:00",
+      "targets": [
+        {
+          "dateFrom": "2026-06-01 00:00:00",
+          "untruncatedCells": 0.0,
+          "truncatedCells": 0.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 09:00:00",
+          "untruncatedCells": 9.0,
+          "truncatedCells": 9.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 09:30:00",
+          "untruncatedCells": 9.5,
+          "truncatedCells": 9.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 10:00:00",
+          "untruncatedCells": 10.0,
+          "truncatedCells": 10.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 10:30:00",
+          "untruncatedCells": 10.5,
+          "truncatedCells": 10.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 11:00:00",
+          "untruncatedCells": 11.0,
+          "truncatedCells": 11.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 10:07:00",
+          "untruncatedCells": 10.116666666666667,
+          "truncatedCells": 10.1,
+          "onGrid": false
+        }
+      ]
+    },
+    {
+      "name": "H3-UTC",
+      "zoomLevel": "H3",
+      "hoursInterval": 3,
+      "cellWidth": 25,
+      "gridMinutes": 30,
+      "stepMinutes": 90,
+      "quantumMinutes": 18,
+      "timeZone": "UTC",
+      "dstTransition": null,
+      "scaleDateFrom": "2026-06-01 00:00:00",
+      "scaleDateTo": "2026-06-05 00:00:00",
+      "targets": [
+        {
+          "dateFrom": "2026-06-01 06:00:00",
+          "untruncatedCells": 2.0,
+          "truncatedCells": 2.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 07:30:00",
+          "untruncatedCells": 2.5,
+          "truncatedCells": 2.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 09:00:00",
+          "untruncatedCells": 3.0,
+          "truncatedCells": 3.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 10:30:00",
+          "untruncatedCells": 3.5,
+          "truncatedCells": 3.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 12:00:00",
+          "untruncatedCells": 4.0,
+          "truncatedCells": 4.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 09:30:00",
+          "untruncatedCells": 3.1666666666666665,
+          "truncatedCells": 3.1,
+          "onGrid": true
+        }
+      ]
+    },
+    {
+      "name": "H6-UTC",
+      "zoomLevel": "H6",
+      "hoursInterval": 6,
+      "cellWidth": 25,
+      "gridMinutes": 30,
+      "stepMinutes": 180,
+      "quantumMinutes": 36,
+      "timeZone": "UTC",
+      "dstTransition": null,
+      "scaleDateFrom": "2026-06-01 00:00:00",
+      "scaleDateTo": "2026-06-05 00:00:00",
+      "targets": [
+        {
+          "dateFrom": "2026-06-01 03:00:00",
+          "untruncatedCells": 0.5,
+          "truncatedCells": 0.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 06:00:00",
+          "untruncatedCells": 1.0,
+          "truncatedCells": 1.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 09:00:00",
+          "untruncatedCells": 1.5,
+          "truncatedCells": 1.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 12:00:00",
+          "untruncatedCells": 2.0,
+          "truncatedCells": 2.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 15:00:00",
+          "untruncatedCells": 2.5,
+          "truncatedCells": 2.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-01 09:30:00",
+          "untruncatedCells": 1.5833333333333335,
+          "truncatedCells": 1.5,
+          "onGrid": true
+        }
+      ]
+    },
+    {
+      "name": "D1-UTC",
+      "zoomLevel": "D1",
+      "hoursInterval": 24,
+      "cellWidth": 25,
+      "gridMinutes": 30,
+      "stepMinutes": 720,
+      "quantumMinutes": 144,
+      "timeZone": "UTC",
+      "dstTransition": null,
+      "scaleDateFrom": "2026-06-01 00:00:00",
+      "scaleDateTo": "2026-06-05 00:00:00",
+      "targets": [
+        {
+          "dateFrom": "2026-06-02 00:00:00",
+          "untruncatedCells": 1.0,
+          "truncatedCells": 1.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-02 12:00:00",
+          "untruncatedCells": 1.5,
+          "truncatedCells": 1.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-03 00:00:00",
+          "untruncatedCells": 2.0,
+          "truncatedCells": 2.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-03 12:00:00",
+          "untruncatedCells": 2.5,
+          "truncatedCells": 2.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-04 00:00:00",
+          "untruncatedCells": 3.0,
+          "truncatedCells": 3.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-06-02 10:30:00",
+          "untruncatedCells": 1.4375,
+          "truncatedCells": 1.4,
+          "onGrid": true
+        }
+      ]
+    },
+    {
+      "name": "H1-Europe/Warsaw-springForward",
+      "zoomLevel": "H1",
+      "hoursInterval": 1,
+      "cellWidth": 25,
+      "gridMinutes": 30,
+      "stepMinutes": 30,
+      "quantumMinutes": 6,
+      "timeZone": "Europe/Warsaw",
+      "dstTransition": "springForward",
+      "scaleDateFrom": "2026-03-28 00:00:00",
+      "scaleDateTo": "2026-03-30 00:00:00",
+      "nonexistentWallClock": "2026-03-29 02:30:00",
+      "targets": [
+        {
+          "dateFrom": "2026-03-29 01:00:00",
+          "untruncatedCells": 25.0,
+          "truncatedCells": 25.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-03-29 01:30:00",
+          "untruncatedCells": 25.5,
+          "truncatedCells": 25.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-03-29 03:00:00",
+          "untruncatedCells": 27.0,
+          "truncatedCells": 27.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-03-29 03:30:00",
+          "untruncatedCells": 27.5,
+          "truncatedCells": 27.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-03-29 04:00:00",
+          "untruncatedCells": 28.0,
+          "truncatedCells": 28.0,
+          "onGrid": true
+        }
+      ]
+    },
+    {
+      "name": "H1-Europe/Warsaw-fallBack",
+      "zoomLevel": "H1",
+      "hoursInterval": 1,
+      "cellWidth": 25,
+      "gridMinutes": 30,
+      "stepMinutes": 30,
+      "quantumMinutes": 6,
+      "timeZone": "Europe/Warsaw",
+      "dstTransition": "fallBack",
+      "scaleDateFrom": "2026-10-24 00:00:00",
+      "scaleDateTo": "2026-10-26 00:00:00",
+      "repeatedWallClock": "2026-10-25 02:30:00",
+      "targets": [
+        {
+          "dateFrom": "2026-10-25 01:00:00",
+          "untruncatedCells": 25.0,
+          "truncatedCells": 25.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-10-25 01:30:00",
+          "untruncatedCells": 25.5,
+          "truncatedCells": 25.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-10-25 02:30:00",
+          "untruncatedCells": 26.5,
+          "truncatedCells": 26.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-10-25 03:00:00",
+          "untruncatedCells": 27.0,
+          "truncatedCells": 27.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-10-25 04:00:00",
+          "untruncatedCells": 28.0,
+          "truncatedCells": 28.0,
+          "onGrid": true
+        }
+      ]
+    },
+    {
+      "name": "D1-Europe/Warsaw-springForward",
+      "zoomLevel": "D1",
+      "hoursInterval": 24,
+      "cellWidth": 25,
+      "gridMinutes": 30,
+      "stepMinutes": 720,
+      "quantumMinutes": 144,
+      "timeZone": "Europe/Warsaw",
+      "dstTransition": "springForward",
+      "scaleDateFrom": "2026-03-27 00:00:00",
+      "scaleDateTo": "2026-03-31 00:00:00",
+      "nonexistentWallClock": "2026-03-29 02:30:00",
+      "targets": [
+        {
+          "dateFrom": "2026-03-28 00:00:00",
+          "untruncatedCells": 1.0,
+          "truncatedCells": 1.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-03-29 00:00:00",
+          "untruncatedCells": 2.0,
+          "truncatedCells": 2.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-03-29 12:00:00",
+          "untruncatedCells": 2.5,
+          "truncatedCells": 2.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-03-30 00:00:00",
+          "untruncatedCells": 3.0,
+          "truncatedCells": 3.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-03-30 12:00:00",
+          "untruncatedCells": 3.5,
+          "truncatedCells": 3.5,
+          "onGrid": true
+        }
+      ]
+    },
+    {
+      "name": "D1-Europe/Warsaw-fallBack",
+      "zoomLevel": "D1",
+      "hoursInterval": 24,
+      "cellWidth": 25,
+      "gridMinutes": 30,
+      "stepMinutes": 720,
+      "quantumMinutes": 144,
+      "timeZone": "Europe/Warsaw",
+      "dstTransition": "fallBack",
+      "scaleDateFrom": "2026-10-23 00:00:00",
+      "scaleDateTo": "2026-10-27 00:00:00",
+      "repeatedWallClock": "2026-10-25 02:30:00",
+      "targets": [
+        {
+          "dateFrom": "2026-10-25 00:00:00",
+          "untruncatedCells": 2.0,
+          "truncatedCells": 2.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-10-25 12:00:00",
+          "untruncatedCells": 2.5,
+          "truncatedCells": 2.5,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-10-26 00:00:00",
+          "untruncatedCells": 3.0,
+          "truncatedCells": 3.0,
+          "onGrid": true
+        },
+        {
+          "dateFrom": "2026-10-26 12:00:00",
+          "untruncatedCells": 3.5,
+          "truncatedCells": 3.5,
+          "onGrid": true
+        }
+      ]
+    }
+  ]
+}

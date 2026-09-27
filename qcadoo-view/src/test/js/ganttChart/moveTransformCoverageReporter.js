@@ -1,0 +1,679 @@
+/*
+ * ***************************************************************************
+ * Copyright (c) 2010 Qcadoo Limited
+ * Project: Qcadoo Framework
+ * Version: 1.4
+ *
+ * This file is part of Qcadoo.
+ *
+ * Qcadoo is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation; either version 3 of the License,
+ * or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * ***************************************************************************
+ */
+'use strict';
+
+// node:test reporter for the GanttChartMoveTransform unit tests.
+//
+// It measures the line coverage of the QCD.components.elements.GanttChartMoveTransform object literal in
+// gantt/ganttChart.js; lines outside the object literal are not counted. It prints:
+//   - one outcome line per test result, followed for a failed result by indented lines holding the error message, the
+//     cause message when it differs, and the stack frames of the error and of its cause;
+//   - under each failed result, the stderr lines of its test file that arrived before that result, below an indented
+//     "stderr of <file>:" label; the stderr lines of a test file that arrive after one of its results failed, as they
+//     arrive, below the same label; stderr of test files without a failed result and all stdout are not printed;
+//   - one "# " line per diagnostic;
+//   - per coverage event, the "Coverage source:", line coverage and "Uncovered lines:" lines, up to the first failed
+//     coverage condition, which prints an "ERROR " line;
+//   - after the last event, one "ERROR " line each for skipped or todo tests, test exclusion options, zero top-level
+//     test cases and no coverage event;
+//   - last, the line "pass N fail N skipped N todo N".
+// It sets process.exitCode to 1 when any of these holds:
+//   - a test fails, is skipped or is marked todo;
+//   - process.execArgv or the NODE_OPTIONS environment variable holds --test-name-pattern, --test-skip-pattern or
+//     --test-only, alone, with "=value" or with "_" in place of "-"; the "ERROR " line names each such option and where
+//     it was found;
+//   - no top-level test case reported a result; a result whose name resolves to its own file path is not a case;
+//   - no coverage event arrived;
+//   - no coverage entry path ends with gantt/ganttChart.js;
+//   - the source file of that coverage entry cannot be read;
+//   - no line of that source file starts with the object literal declaration;
+//   - the brace closing the object literal is missing;
+//   - no coverage lines are reported inside the object literal;
+//   - fewer than 90% of the reported lines inside the object literal ran at least once.
+//
+// Usage, from the repository root:
+//   node --test --experimental-test-coverage --test-coverage-include='**/gantt/ganttChart.js' \
+//     --test-reporter=./qcadoo/qcadoo-view/src/test/js/ganttChart/moveTransformCoverageReporter.js \
+//     qcadoo/qcadoo-view/src/test/js/ganttChart/ganttChartMoveTransform.test.js
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Suffix, with "/" separators, of the coverage entry path of the measured script.
+const TARGET_PATH_SUFFIX = 'gantt/ganttChart.js';
+
+// Statement start that declares the measured object literal.
+const DECLARATION = 'QCD.components.elements.GanttChartMoveTransform =';
+
+// Minimum fraction of covered lines inside the measured object literal.
+const MIN_LINE_RATE = 0.9;
+
+// Characters after which a "/" starts a regular expression literal.
+const REGEX_PRECEDING_CHARACTERS = '(,=:[!&|?{};+-*%<>~^';
+
+// Keywords after which a "/" starts a regular expression literal.
+const REGEX_PRECEDING_KEYWORDS = ['return', 'typeof', 'case', 'delete', 'void', 'throw', 'new', 'in', 'instanceof', 'do',
+    'else', 'yield', 'await'];
+
+// Output labels per test outcome; "file" is a passed result whose name resolves to its own file path.
+const OUTCOME_LABELS = { pass: 'PASS', fail: 'FAIL', skipped: 'SKIPPED', todo: 'TODO', file: 'FILE' };
+
+// Names, in their "-" form, of the test runner options that exclude tests from a run.
+const EXCLUDING_OPTIONS = ['--test-name-pattern', '--test-skip-pattern', '--test-only'];
+
+// Key and label of the stderr of an event that names no test file.
+const UNKNOWN_FILE = '<unknown file>';
+
+// Splits a NODE_OPTIONS value into its options. White space outside double quotes separates options, a double quote
+// opens or closes a quoted part and is dropped, and inside a quoted part a backslash takes the next character
+// literally.
+function splitNodeOptions(value) {
+    const tokens = [];
+    let token = '';
+    let inToken = false;
+    let quoted = false;
+    for (let index = 0; index < value.length; index++) {
+        const character = value[index];
+        if (quoted && character === '\\' && index + 1 < value.length) {
+            index++;
+            token += value[index];
+            inToken = true;
+        } else if (character === '"') {
+            quoted = !quoted;
+        } else if (!quoted && /\s/.test(character)) {
+            if (inToken) {
+                tokens.push(token);
+                token = '';
+                inToken = false;
+            }
+        } else {
+            token += character;
+            inToken = true;
+        }
+    }
+    if (inToken) {
+        tokens.push(token);
+    }
+    return tokens;
+}
+
+// Returns the option name of a command-line token in its "-" form: the text before the first "=", with every "_"
+// replaced by "-". Returns an empty string for a token that does not start with "--".
+function optionName(token) {
+    if (typeof token !== 'string' || !token.startsWith('--')) {
+        return '';
+    }
+    const equalsIndex = token.indexOf('=');
+    return (equalsIndex < 0 ? token : token.slice(0, equalsIndex)).replace(/_/g, '-');
+}
+
+// Lists the EXCLUDING_OPTIONS found among the tokens of execArgv, labelled "command line", and of the NODE_OPTIONS
+// value, labelled "NODE_OPTIONS", as "<option> (<label>)" entries in order of appearance, each entry once.
+function findExcludingOptions(execArgv, nodeOptions) {
+    const found = [];
+    const collect = (tokens, label) => {
+        for (const token of tokens) {
+            const name = optionName(token);
+            const entry = name + ' (' + label + ')';
+            if (EXCLUDING_OPTIONS.indexOf(name) >= 0 && found.indexOf(entry) < 0) {
+                found.push(entry);
+            }
+        }
+    };
+    collect(Array.isArray(execArgv) ? execArgv : [], 'command line');
+    collect(typeof nodeOptions === 'string' ? splitNodeOptions(nodeOptions) : [], 'NODE_OPTIONS');
+    return found;
+}
+
+// Returns the 1-based number of the first line that starts, after indentation, with the declaration, or -1 when none does.
+function findDeclarationLine(source) {
+    const lines = source.split('\n');
+    for (let index = 0; index < lines.length; index++) {
+        if (lines[index].trimStart().startsWith(DECLARATION)) {
+            return index + 1;
+        }
+    }
+    return -1;
+}
+
+// Returns the 1-based line holding the brace that closes the first "{" after the declaration on the given line,
+// or -1 when there is no "{" or no matching "}".
+function findBlockEndLine(source, declarationLine) {
+    const declarationIndex = source.indexOf(DECLARATION, offsetOfLine(source, declarationLine));
+    if (declarationIndex < 0) {
+        return -1;
+    }
+    const openBraceIndex = source.indexOf('{', declarationIndex + DECLARATION.length);
+    if (openBraceIndex < 0) {
+        return -1;
+    }
+    const closeBraceIndex = findClosingBrace(source, openBraceIndex + 1);
+    return closeBraceIndex < 0 ? -1 : lineOfOffset(source, closeBraceIndex);
+}
+
+// Counts the reported lines inside [startLine, endLine] and those among them that ran at least once, and lists the rest.
+function computeBlockCoverage(lineReports, startLine, endLine) {
+    let total = 0;
+    let covered = 0;
+    const uncovered = [];
+    for (const report of lineReports) {
+        if (report && report.line >= startLine && report.line <= endLine) {
+            total++;
+            if (report.count > 0) {
+                covered++;
+            } else {
+                uncovered.push(report.line);
+            }
+        }
+    }
+    uncovered.sort((left, right) => left - right);
+    return { total, covered, uncovered };
+}
+
+// Returns the offset of the first character of the given 1-based line.
+function offsetOfLine(source, line) {
+    let offset = 0;
+    for (let current = 1; current < line; current++) {
+        const lineBreak = source.indexOf('\n', offset);
+        if (lineBreak < 0) {
+            return source.length;
+        }
+        offset = lineBreak + 1;
+    }
+    return offset;
+}
+
+// Returns the 1-based line of the character at the given offset.
+function lineOfOffset(source, offset) {
+    let line = 1;
+    for (let index = 0; index < offset; index++) {
+        if (source[index] === '\n') {
+            line++;
+        }
+    }
+    return line;
+}
+
+// Returns the offset of the "}" that closes a brace opened just before `from`, or -1 when the source ends first.
+// Braces inside strings, template literal text, comments and regular expression literals are not counted.
+function findClosingBrace(source, from) {
+    let depth = 1;
+    let previousCharacter = '';
+    let previousWord = '';
+    let index = from;
+    while (index < source.length) {
+        const character = source[index];
+        const nextCharacter = source[index + 1];
+        if (/\s/.test(character)) {
+            index++;
+        } else if (character === '/' && nextCharacter === '/') {
+            index = skipLineComment(source, index);
+        } else if (character === '/' && nextCharacter === '*') {
+            index = skipBlockComment(source, index);
+        } else if (character === '"' || character === '\'') {
+            index = skipQuoted(source, index);
+            previousCharacter = character;
+            previousWord = '';
+        } else if (character === '`') {
+            index = skipTemplate(source, index);
+            previousCharacter = character;
+            previousWord = '';
+        } else if (isWordCharacter(character)) {
+            const wordEnd = skipWord(source, index);
+            previousWord = source.slice(index, wordEnd);
+            previousCharacter = source[wordEnd - 1];
+            index = wordEnd;
+        } else {
+            const regexEnd = character === '/' && startsRegex(previousCharacter, previousWord) ? skipRegex(source, index) : -1;
+            if (regexEnd > 0) {
+                index = regexEnd;
+            } else {
+                if (character === '{') {
+                    depth++;
+                } else if (character === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        return index;
+                    }
+                }
+                index++;
+            }
+            previousCharacter = character;
+            previousWord = '';
+        }
+    }
+    return -1;
+}
+
+// Checks whether a "/" after the given previous significant character or word starts a regular expression literal.
+function startsRegex(previousCharacter, previousWord) {
+    if (previousWord !== '') {
+        return REGEX_PRECEDING_KEYWORDS.indexOf(previousWord) >= 0;
+    }
+    return previousCharacter === '' || REGEX_PRECEDING_CHARACTERS.indexOf(previousCharacter) >= 0;
+}
+
+// Checks whether a character belongs to an identifier, keyword or number.
+function isWordCharacter(character) {
+    return /[\w$\u0080-\uffff]/.test(character);
+}
+
+// Returns the offset after the identifier, keyword or number starting at `index`.
+function skipWord(source, index) {
+    let end = index;
+    while (end < source.length && isWordCharacter(source[end])) {
+        end++;
+    }
+    return end;
+}
+
+// Returns the offset of the line break ending the "//" comment starting at `index`, or the source length.
+function skipLineComment(source, index) {
+    const lineBreak = source.indexOf('\n', index);
+    return lineBreak < 0 ? source.length : lineBreak;
+}
+
+// Returns the offset after the "*/" ending the block comment starting at `index`, or the source length.
+function skipBlockComment(source, index) {
+    const end = source.indexOf('*/', index + 2);
+    return end < 0 ? source.length : end + 2;
+}
+
+// Returns the offset after the closing quote of the string starting at `index`, or the source length.
+function skipQuoted(source, index) {
+    const quote = source[index];
+    let position = index + 1;
+    while (position < source.length) {
+        const character = source[position];
+        if (character === '\\') {
+            position += 2;
+        } else if (character === quote) {
+            return position + 1;
+        } else {
+            position++;
+        }
+    }
+    return source.length;
+}
+
+// Returns the offset after the closing backtick of the template literal starting at `index`, or the source length.
+// Each "${...}" substitution is skipped as code up to its matching "}".
+function skipTemplate(source, index) {
+    let position = index + 1;
+    while (position < source.length) {
+        const character = source[position];
+        if (character === '\\') {
+            position += 2;
+        } else if (character === '`') {
+            return position + 1;
+        } else if (character === '$' && source[position + 1] === '{') {
+            const substitutionEnd = findClosingBrace(source, position + 2);
+            if (substitutionEnd < 0) {
+                return source.length;
+            }
+            position = substitutionEnd + 1;
+        } else {
+            position++;
+        }
+    }
+    return source.length;
+}
+
+// Returns the offset after the closing "/" of the regular expression literal starting at `index`, or -1 when the line
+// ends first. Escaped characters and "[...]" classes are skipped.
+function skipRegex(source, index) {
+    let position = index + 1;
+    let inClass = false;
+    while (position < source.length) {
+        const character = source[position];
+        if (character === '\n' || character === '\r') {
+            return -1;
+        }
+        if (character === '\\') {
+            position += 2;
+        } else {
+            if (inClass) {
+                inClass = character !== ']';
+            } else if (character === '[') {
+                inClass = true;
+            } else if (character === '/') {
+                return position + 1;
+            }
+            position++;
+        }
+    }
+    return -1;
+}
+
+// Formats ascending line numbers as comma-separated numbers and "first-last" ranges, or "none" when the list is empty.
+function formatLineRanges(lines) {
+    if (lines.length === 0) {
+        return 'none';
+    }
+    const ranges = [];
+    let first = lines[0];
+    let last = lines[0];
+    for (let index = 1; index <= lines.length; index++) {
+        const line = lines[index];
+        if (line === last + 1) {
+            last = line;
+        } else {
+            ranges.push(first === last ? String(first) : first + '-' + last);
+            first = line;
+            last = line;
+        }
+    }
+    return ranges.join(', ');
+}
+
+// Formats a covered/total fraction as a percentage truncated to two decimals.
+function formatPercent(covered, total) {
+    return (Math.floor((covered * 10000) / total) / 100).toFixed(2);
+}
+
+// Evaluates the coverage summary of a test:coverage event against the measured object literal.
+// Returns the output lines and whether the coverage gate passed.
+function evaluateCoverage(summary) {
+    const output = [];
+    const failed = (message) => {
+        output.push('ERROR ' + message);
+        return { output, passed: false };
+    };
+
+    const files = summary && Array.isArray(summary.files) ? summary.files : [];
+    const entry = files.find((file) => {
+        return file && typeof file.path === 'string' && file.path.replace(/\\/g, '/').endsWith(TARGET_PATH_SUFFIX);
+    });
+    if (!entry) {
+        return failed('no coverage entry for ' + TARGET_PATH_SUFFIX
+            + '; run with --test-coverage-include=\'**/' + TARGET_PATH_SUFFIX + '\'');
+    }
+
+    let source;
+    try {
+        source = fs.readFileSync(entry.path, 'utf8');
+    } catch (error) {
+        return failed('cannot read ' + entry.path + ': ' + error.message);
+    }
+
+    const startLine = findDeclarationLine(source);
+    if (startLine < 0) {
+        return failed('no line in ' + entry.path + ' starts with "' + DECLARATION + '"');
+    }
+    const endLine = findBlockEndLine(source, startLine);
+    if (endLine < 0) {
+        return failed('no closing brace for the object literal declared on line ' + startLine + ' of ' + entry.path);
+    }
+
+    const workingDirectory = summary.workingDirectory || process.cwd();
+    output.push('Coverage source: ' + path.relative(workingDirectory, entry.path).replace(/\\/g, '/'));
+
+    const coverage = computeBlockCoverage(Array.isArray(entry.lines) ? entry.lines : [], startLine, endLine);
+    if (coverage.total === 0) {
+        return failed('no coverage lines reported for lines ' + startLine + '-' + endLine + ' of ' + entry.path);
+    }
+
+    output.push('GanttChartMoveTransform line coverage: ' + formatPercent(coverage.covered, coverage.total) + '% ('
+        + coverage.covered + '/' + coverage.total + ', lines ' + startLine + '-' + endLine + ')');
+    output.push('Uncovered lines: ' + formatLineRanges(coverage.uncovered));
+
+    if (coverage.covered / coverage.total < MIN_LINE_RATE) {
+        return failed('GanttChartMoveTransform line coverage is below ' + (MIN_LINE_RATE * 100).toFixed(2) + '%');
+    }
+    return { output, passed: true };
+}
+
+// Formats a test duration in milliseconds with three decimals, or "?" when it is missing.
+function formatDuration(details) {
+    const duration = details ? details.duration_ms : undefined;
+    return typeof duration === 'number' && isFinite(duration) ? duration.toFixed(3) : '?';
+}
+
+// Returns the indented lines of a multi-line text.
+function indentLines(text, indent) {
+    return String(text).split('\n').map((line) => {
+        return indent + line;
+    });
+}
+
+// Returns the stack frame lines ("at ...") of a stack trace.
+function stackFrames(stack) {
+    if (typeof stack !== 'string') {
+        return [];
+    }
+    return stack.split('\n').filter((line) => {
+        return /^\s*at\s/.test(line);
+    });
+}
+
+// Describes a test failure error: its message, the message of its cause when that differs, and the stack frames of the
+// error and of its cause.
+function describeError(error, indent) {
+    if (error === undefined || error === null) {
+        return [];
+    }
+    if (typeof error !== 'object') {
+        return indentLines(String(error), indent);
+    }
+    const message = error.message !== undefined ? String(error.message) : String(error);
+    const lines = indentLines(message, indent);
+
+    const cause = error.cause;
+    const causeIsObject = cause !== null && typeof cause === 'object';
+    if (cause !== undefined && cause !== null) {
+        const causeMessage = causeIsObject ? String(cause.message !== undefined ? cause.message : cause) : String(cause);
+        if (causeMessage !== message) {
+            lines.push.apply(lines, indentLines('cause: ' + causeMessage, indent));
+        }
+    }
+
+    const frames = stackFrames(error.stack);
+    const causeFrames = causeIsObject ? stackFrames(cause.stack) : [];
+    for (const frame of causeFrames) {
+        if (frames.indexOf(frame) < 0) {
+            frames.push(frame);
+        }
+    }
+    for (const frame of frames) {
+        lines.push(indent + frame.trim());
+    }
+    return lines;
+}
+
+// Checks whether a test:pass or test:fail event reports a whole test file: its name resolves to its own file path.
+function isFileResult(data) {
+    return typeof data.name === 'string' && typeof data.file === 'string' && data.name !== ''
+        && path.resolve(data.name) === path.resolve(data.file);
+}
+
+// Returns the key that matches the stderr of a test file with its results: the resolved file path, or UNKNOWN_FILE when
+// the event names no file.
+function fileKey(file) {
+    return typeof file === 'string' && file !== '' ? path.resolve(file) : UNKNOWN_FILE;
+}
+
+// Returns the label line "stderr of <file>:" of the test file with the given key, its path relative to the working
+// directory.
+function stderrLabel(key, indent) {
+    const file = key === UNKNOWN_FILE ? '' : path.relative(process.cwd(), key).replace(/\\/g, '/');
+    return indent + 'stderr of ' + (file !== '' ? file : key) + ':';
+}
+
+// Returns the indented lines of stderr text; the empty line after a final line break is dropped.
+function stderrLines(text, indent) {
+    const lines = String(text).split(/\r?\n/);
+    if (lines[lines.length - 1] === '') {
+        lines.pop();
+    }
+    return lines.map((line) => {
+        return indent + line;
+    });
+}
+
+// Classifies a test:pass or test:fail event as pass, fail, skipped, todo or file and returns its output lines and the
+// indentation of the lines under its outcome line. A passed file result is "file"; a failed file result is "fail".
+function describeTestResult(type, data) {
+    const nesting = typeof data.nesting === 'number' && data.nesting > 0 ? data.nesting : 0;
+    const indent = '  '.repeat(nesting);
+    const isTodo = data.todo !== undefined && data.todo !== false;
+    const isSkipped = data.skip !== undefined && data.skip !== false;
+
+    let outcome;
+    let reason;
+    if (isTodo) {
+        outcome = 'todo';
+        reason = data.todo;
+    } else if (isSkipped) {
+        outcome = 'skipped';
+        reason = data.skip;
+    } else if (type === 'test:fail') {
+        outcome = 'fail';
+    } else {
+        outcome = isFileResult(data) ? 'file' : 'pass';
+    }
+
+    const name = data.name !== undefined ? data.name : '<unnamed test>';
+    const suffix = typeof reason === 'string' && reason !== '' ? ' # ' + reason : '';
+    const lines = [indent + OUTCOME_LABELS[outcome] + ' ' + name + ' (' + formatDuration(data.details) + ' ms)' + suffix];
+    const detailIndent = indent + '  ';
+    if (type === 'test:fail') {
+        lines.push.apply(lines, describeError(data.details ? data.details.error : undefined, detailIndent));
+    }
+    return { outcome, lines, detailIndent };
+}
+
+// Reports test results and diagnostics, gates the GanttChartMoveTransform line coverage, and fails the run on any failed,
+// skipped or todo test, on test exclusion options, on zero top-level tests and on missing coverage data.
+module.exports = async function* moveTransformCoverageReporter(source) {
+    let pass = 0;
+    let fail = 0;
+    let skipped = 0;
+    let todo = 0;
+    let topLevelTests = 0;
+    let coverageSeen = false;
+    // Stderr text, by fileKey, of each test file without a failed result.
+    const bufferedStderr = new Map();
+    // fileKey of each test file with a failed result.
+    const failedFiles = new Set();
+    // The fileKey and line indentation of the stderr block printed last, or null when other output followed it.
+    let openStderrBlock = null;
+
+    for await (const event of source) {
+        const type = event ? event.type : undefined;
+        const data = event && event.data ? event.data : {};
+
+        if (type === 'test:pass' || type === 'test:fail') {
+            // Counts top-level test cases; results of whole test files are not test cases.
+            if (data.nesting === 0 && !isFileResult(data)) {
+                topLevelTests++;
+            }
+            const result = describeTestResult(type, data);
+            if (result.outcome === 'pass') {
+                pass++;
+            } else if (result.outcome === 'fail') {
+                fail++;
+                process.exitCode = 1;
+            } else if (result.outcome === 'skipped') {
+                skipped++;
+                process.exitCode = 1;
+            } else if (result.outcome === 'todo') {
+                todo++;
+                process.exitCode = 1;
+            }
+            for (const line of result.lines) {
+                yield line + '\n';
+            }
+            openStderrBlock = null;
+            // Prints, under a failed result, the stderr of its test file that arrived before it.
+            if (type === 'test:fail') {
+                const key = fileKey(data.file);
+                failedFiles.add(key);
+                const buffered = bufferedStderr.get(key);
+                bufferedStderr.delete(key);
+                const stderrIndent = result.detailIndent + '  ';
+                const lines = buffered !== undefined ? stderrLines(buffered, stderrIndent) : [];
+                if (lines.length > 0) {
+                    yield stderrLabel(key, result.detailIndent) + '\n';
+                    for (const line of lines) {
+                        yield line + '\n';
+                    }
+                    openStderrBlock = { key, indent: stderrIndent };
+                }
+            }
+        } else if (type === 'test:stderr') {
+            // Buffers the stderr of a test file without a failed result and prints that of a file with one.
+            const key = fileKey(data.file);
+            const text = data.message !== undefined && data.message !== null ? String(data.message) : '';
+            if (!failedFiles.has(key)) {
+                bufferedStderr.set(key, (bufferedStderr.has(key) ? bufferedStderr.get(key) : '') + text);
+            } else {
+                const continuesBlock = openStderrBlock !== null && openStderrBlock.key === key;
+                const stderrIndent = continuesBlock ? openStderrBlock.indent : '    ';
+                const lines = stderrLines(text, stderrIndent);
+                if (lines.length > 0) {
+                    if (!continuesBlock) {
+                        yield stderrLabel(key, '  ') + '\n';
+                        openStderrBlock = { key, indent: stderrIndent };
+                    }
+                    for (const line of lines) {
+                        yield line + '\n';
+                    }
+                }
+            }
+        } else if (type === 'test:diagnostic') {
+            yield '# ' + data.message + '\n';
+            openStderrBlock = null;
+        } else if (type === 'test:coverage') {
+            coverageSeen = true;
+            const result = evaluateCoverage(data.summary);
+            for (const line of result.output) {
+                yield line + '\n';
+            }
+            openStderrBlock = null;
+            if (!result.passed) {
+                process.exitCode = 1;
+            }
+        }
+    }
+
+    // Checks the run-level conditions after the last event.
+    if (skipped > 0 || todo > 0) {
+        yield 'ERROR skipped and todo tests are not allowed (skipped ' + skipped + ', todo ' + todo + ')\n';
+        process.exitCode = 1;
+    }
+    const excludingOptions = findExcludingOptions(process.execArgv, process.env.NODE_OPTIONS);
+    if (excludingOptions.length > 0) {
+        yield 'ERROR test exclusion options are not allowed: ' + excludingOptions.join(', ') + '; run without them\n';
+        process.exitCode = 1;
+    }
+    if (topLevelTests === 0) {
+        yield 'ERROR no top-level test case reported a result\n';
+        process.exitCode = 1;
+    }
+    if (!coverageSeen) {
+        yield 'ERROR no coverage data; run with --experimental-test-coverage\n';
+        process.exitCode = 1;
+    }
+    yield 'pass ' + pass + ' fail ' + fail + ' skipped ' + skipped + ' todo ' + todo + '\n';
+};
